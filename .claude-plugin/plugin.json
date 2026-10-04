@@ -1,0 +1,7 @@
+{
+  "name": "claude-chef",
+  "version": "0.1.0",
+  "description": "A live forecast of the context window, drawn above the prompt.",
+  "author": { "name": "Schalk Neethling" },
+  "types": "./types/index.d.ts"
+}
