@@ -1,6 +1,6 @@
 import { describe, expect, test } from "claude-code/testing";
 
-import { costOf, createTally, readLine } from "../hooks/transcript.mjs";
+import { addTranscript, costOf, createTally, readLine } from "../hooks/transcript.mjs";
 
 /** Floating-point sums of dollars, compared to a millionth of a cent. */
 const round = (usd: number | undefined) => (usd === undefined ? usd : Math.round(usd * 1e8) / 1e8);
@@ -101,5 +101,27 @@ describe("tally", () => {
     const result = tally.result();
     expect(result.unpricedModels).toEqual(["some-gateway-model"]);
     expect(result.days["2026-10-06"]!.tokens).toBe(5_000_000);
+  });
+});
+
+describe("addTranscript", () => {
+  const since = new Date(2026, 6, 1).getTime();
+
+  test("adds a file's responses once it has been read to its end", async () => {
+    const tally = createTally({ since });
+    expect(await addTranscript([line(), line({ requestId: "req_2" })], tally)).toBe(true);
+    expect(tally.result().responses).toBe(2);
+  });
+
+  test("a file that fails partway adds nothing", async () => {
+    const tally = createTally({ since });
+    async function* failing() {
+      yield line();
+      throw new Error("EIO");
+    }
+
+    expect(await addTranscript(failing(), tally)).toBe(false);
+    expect(tally.result().responses).toBe(0);
+    expect(tally.result().days).toEqual({});
   });
 });

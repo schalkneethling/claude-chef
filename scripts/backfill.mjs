@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
-import { createTally, readLine } from "../hooks/transcript.mjs";
+import { addTranscript, createTally } from "../hooks/transcript.mjs";
 
 const DAY_MS = 86_400_000;
 
@@ -65,14 +65,17 @@ const excludeSessions = stdin === "" ? [] : JSON.parse(stdin);
 
 const tally = createTally({ since, excludeSessions });
 let files = 0;
+// Transcripts that failed to read (removed mid-scan, no permission). Node reads
+// any size, so none are skipped for being too large.
+let unreadableFiles = 0;
 
 for await (const path of transcripts(projects)) {
   files += 1;
   const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
 
-  for await (const line of lines) {
-    tally.add(readLine(line));
+  if (!(await addTranscript(lines, tally))) {
+    unreadableFiles += 1;
   }
 }
 
-process.stdout.write(JSON.stringify({ ...tally.result(), files, skippedFiles: 0 }));
+process.stdout.write(JSON.stringify({ ...tally.result(), files, skippedFiles: 0, unreadableFiles }));

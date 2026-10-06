@@ -11,7 +11,10 @@ export type Tallied = {
   days: Record<string, ChefStationDay>;
   unpricedModels: string[];
   files: number;
+  /** Transcripts over 4 MiB that the mod could not read itself. */
   skippedFiles: number;
+  /** Transcripts whose read failed; absent from helpers older than 0.3.1. */
+  unreadableFiles?: number;
 };
 
 /** Turns a tally into the backfill the ledger keeps, with models named as people say them. */
@@ -22,6 +25,7 @@ export function toBackfill(tallied: Tallied, source: ChefStationBackfill["source
     source,
     files: tallied.files,
     skippedFiles: tallied.skippedFiles,
+    unreadableFiles: tallied.unreadableFiles ?? 0,
     unpricedModels: tallied.unpricedModels,
   };
 }
@@ -36,6 +40,10 @@ export function describeBackfill(backfill: ChefStationBackfill): string {
 
   if (backfill.skippedFiles > 0) {
     notes.push(`${backfill.skippedFiles} over 4 MiB were skipped; install Node to include them.`);
+  }
+
+  if ((backfill.unreadableFiles ?? 0) > 0) {
+    notes.push(`Incomplete: ${backfill.unreadableFiles} could not be read, so their usage is missing.`);
   }
 
   if (backfill.unpricedModels.length > 0) {

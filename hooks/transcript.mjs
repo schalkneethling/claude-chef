@@ -164,6 +164,38 @@ export function createTally({ since, excludeSessions = [] }) {
   };
 }
 
+/**
+ * Adds one transcript's responses to a tally, but only once the whole file
+ * has been read: a file that fails partway adds nothing, rather than part of
+ * its usage.
+ *
+ * @param {AsyncIterable<string> | Iterable<string>} lines
+ * @param {{ add: (entry: Entry | undefined) => void }} tally
+ * @returns {Promise<boolean>} whether the file was read to its end
+ */
+export async function addTranscript(lines, tally) {
+  /** @type {Entry[]} */
+  const staged = [];
+
+  try {
+    for await (const line of lines) {
+      const entry = readLine(line);
+
+      if (entry) {
+        staged.push(entry);
+      }
+    }
+  } catch {
+    return false;
+  }
+
+  for (const entry of staged) {
+    tally.add(entry);
+  }
+
+  return true;
+}
+
 /** @returns {Day} */
 function emptyDay() {
   return { usd: 0, tokens: 0, cacheReadTokens: 0, inputTokens: 0, hours: new Array(24).fill(0), models: {}, projects: {} };

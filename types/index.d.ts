@@ -51,6 +51,8 @@ export type ChefStationBackfill = {
   files: number;
   /** Transcripts too large for the mod to read itself (only when Node was not found). */
   skippedFiles: number;
+  /** Transcripts whose read failed; the backfill is incomplete when there are any. Absent before 0.3.1. */
+  unreadableFiles?: number;
   /** Model ids with no known price; their tokens count but their cost does not. */
   unpricedModels: string[];
 };

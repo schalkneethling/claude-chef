@@ -6,7 +6,7 @@ import { describeBackfill, MAX_READ_BYTES, SCAN_TIMEOUT_MS, type Tallied, toBack
 import { modelName } from "./format";
 import { backfillSince, composeLedger, dayKey, emptyLedger, isStale, recordTurn } from "./ledger";
 import { STATIONS, tray } from "./stations";
-import { createTally, readLine } from "./transcript.mjs";
+import { addTranscript, createTally } from "./transcript.mjs";
 
 /**
  * Each session stores its own turns under `turns:<session id>`, and the tray
@@ -303,6 +303,7 @@ async function scanWithFs($: EngineInterface, projects: string, options: ScanOpt
   const tally = createTally(options);
   let files = 0;
   let skippedFiles = 0;
+  let unreadableFiles = 0;
 
   for (const file of await listTranscripts($, projects)) {
     files += 1;
@@ -312,14 +313,20 @@ async function scanWithFs($: EngineInterface, projects: string, options: ScanOpt
       continue;
     }
 
-    const text = await $.fs.read(file.path).catch(() => "");
+    let text: string;
 
-    for (const line of text.split("\n")) {
-      tally.add(readLine(line));
+    try {
+      text = await $.fs.read(file.path);
+    } catch {
+      // Counted apart from the size-limited skips, so the backfill can say it is incomplete.
+      unreadableFiles += 1;
+      continue;
     }
+
+    await addTranscript(text.split("\n"), tally);
   }
 
-  return { ...tally.result(), files, skippedFiles };
+  return { ...tally.result(), files, skippedFiles, unreadableFiles };
 }
 
 /** Every .jsonl file under `directory`, subagent transcripts included. */

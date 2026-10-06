@@ -20,6 +20,8 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
     usd: 0,
     scan: EMPTY_SCAN as unknown,
     scanCalls: [] as { argv: readonly string[]; stdin?: string }[],
+    /** Whether the Node helper is missing, so the mod reads the transcripts itself. */
+    hasNoNode: false,
     rateLimits: [
       { kind: "five_hour", percentUsed: 12, resetsAt: new Date(START + 2 * HOUR + 10 * 60_000).toISOString() },
       { kind: "seven_day", percentUsed: 85, resetsAt: new Date(START + 47 * HOUR + 5 * 60_000).toISOString() },
@@ -34,6 +36,10 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
   on("session.id", () => ({ value: "this-session" }));
   on("turn.start", ($, e) => ({ turnId: e.turnId }));
   on("process.run", ($, e) => {
+    if (figures.hasNoNode) {
+      throw new Error("spawn node ENOENT");
+    }
+
     figures.scanCalls.push({ argv: e.argv, stdin: e.init?.stdin });
     return { value: { exitCode: 0, stdout: JSON.stringify(figures.scan), stderr: "", isStdoutTruncated: false, isStderrTruncated: false } };
   });
@@ -258,5 +264,48 @@ describe("chef-station", () => {
     expect(await ui.find({ type: "Text", text: "Sonnet 5.5" })).toBeDefined();
     expect(await ui.find({ type: "Text", text: "Opus 5.5" })).toBeDefined();
     await ui.unmount();
+  });
+
+  test("without Node, a transcript that cannot be read marks the backfill incomplete and keeps the rest", async ($, on) => {
+    const { figures } = kitchen(on);
+    figures.hasNoNode = true;
+    const projects = "/home/chef/.claude/projects";
+    const response = JSON.stringify({
+      type: "assistant",
+      requestId: "req_1",
+      sessionId: "older-session",
+      cwd: "/work/cli",
+      timestamp: new Date(START - HOUR).toISOString(),
+      message: {
+        id: "msg_1",
+        model: "claude-opus-5-5",
+        usage: { input_tokens: 1_000_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      },
+    });
+
+    on("fs.list", ($, e) => ({
+      value:
+        e.path === projects
+          ? [
+              { name: "good.jsonl", kind: "file", size: 100, mtimeMs: 0, isLink: false },
+              { name: "locked.jsonl", kind: "file", size: 100, mtimeMs: 0, isLink: false },
+              { name: "huge.jsonl", kind: "file", size: 5 * 1024 * 1024, mtimeMs: 0, isLink: false },
+            ]
+          : [],
+    }) as any);
+    on("fs.read", ($, e: any) => {
+      if (e.path.endsWith("locked.jsonl")) {
+        throw new Error("EACCES");
+      }
+
+      return { value: response } as any;
+    });
+
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    const { text } = await $.command.run({ command: "chef", args: "backfill" } as any);
+
+    expect(text).toBe(
+      "Read 3 transcripts: $4.00 across 1 days. 1 over 4 MiB were skipped; install Node to include them. Incomplete: 1 could not be read, so their usage is missing.",
+    );
   });
 });
