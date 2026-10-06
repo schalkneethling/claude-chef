@@ -18,6 +18,7 @@ const EMPTY_SCAN = { days: {}, unpricedModels: [], files: 0, skippedFiles: 0, re
 function kitchen(on: On, store: Record<string, unknown> = {}) {
   const figures = {
     usd: 0,
+    model: "claude-opus-5-5[1m]",
     scan: EMPTY_SCAN as unknown,
     scanCalls: [] as { argv: readonly string[]; stdin?: string }[],
     /** Whether the Node helper is missing, so the mod reads the transcripts itself. */
@@ -34,6 +35,7 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
   on("session.start", ($, e) => ({ cwd: e.cwd }));
   on("session.root", () => ({ value: "/work/create-project-calavera" }));
   on("session.id", () => ({ value: "this-session" }));
+  on("session.model", () => ({ value: figures.model }));
   on("turn.start", ($, e) => ({ turnId: e.turnId }));
   on("process.run", ($, e) => {
     if (figures.hasNoNode) {
@@ -307,5 +309,18 @@ describe("chef-station", () => {
     expect(text).toBe(
       "Read 3 transcripts: $4.00 across 1 days. 1 over 4 MiB were skipped; install Node to include them. Incomplete: 1 could not be read, so their usage is missing.",
     );
+  });
+
+  test("the Now row names the session's model before any turn, and follows a /model switch", async ($, on) => {
+    const { figures } = kitchen(on);
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+
+    expect(await ui.find({ type: "Text", text: /^ · Opus 5\.5 · / })).toBeDefined();
+
+    figures.model = "claude-sonnet-5-5";
+    await $.turn.start({ text: "cook", turnId: "t2" } as any);
+    expect(await ui.find({ type: "Text", text: /^ · Sonnet 5\.5 · / })).toBeDefined();
+    await ui.unmount();
   });
 });
