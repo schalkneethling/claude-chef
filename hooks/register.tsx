@@ -49,11 +49,12 @@ export const register: Register = (on, options) => {
     const result = await next(e);
     const usage = await $.session.usage();
     const root = await $.session.root();
+    const model = modelName(await $.session.model());
     const saved = await $.store.get(STATION_KEY);
 
     await update($, live, () => ({
       project: basename(root),
-      model: "—",
+      model,
       outputTokens: 0,
       usd: usage.cost?.usd ?? 0,
       startedAt: usage.startedAt,
@@ -95,7 +96,9 @@ export const register: Register = (on, options) => {
   // Raised for the main conversation's turns only; subagents' runs raise none.
   on("turn.start", async ($, e, next) => {
     const at = await $.clock.now();
-    await update($, live, (before) => (before === null ? before : { ...before, turnStartedAt: at }));
+    // Read again each turn, so a /model switch shows before the turn completes.
+    const model = modelName(await $.session.model());
+    await update($, live, (before) => (before === null ? before : { ...before, model, turnStartedAt: at }));
     await update($, now, () => at);
 
     turnTicker?.cancel();

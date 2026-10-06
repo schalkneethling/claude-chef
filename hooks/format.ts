@@ -22,9 +22,11 @@ export function money(usd: number): string {
 
 /**
  * A model id as people say it: `claude-opus-5-5` is "Opus 5.5",
- * `claude-3-5-sonnet-20241022` is "Sonnet 3.5". Anything else is kept as given.
+ * `claude-3-5-sonnet-20241022` is "Sonnet 3.5". A context-window suffix such
+ * as `[1m]`, which `/model` shows, is dropped. Anything else is kept as given.
  */
-export function modelName(id: string): string {
+export function modelName(model: string): string {
+  const id = model.replace(/\[[^\]]*\]$/, "");
   const familyFirst = /^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(id);
 
   if (familyFirst) {
@@ -39,7 +41,7 @@ export function modelName(id: string): string {
     return `${capitalize(family)} ${minor ? `${major}.${minor}` : major}`;
   }
 
-  return id;
+  return model;
 }
 
 function capitalize(word: string): string {
