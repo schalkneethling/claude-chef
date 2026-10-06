@@ -4,9 +4,7 @@ A Claude Code mod that puts a chef station tray directly above your prompt, so y
 
 ## See it in action
 
-[![The Chef Station tray above the Claude Code prompt, showing the Trend station's bar chart of today's spend by hour. Select to watch the demo video.](docs/chef-station-demo.png)](docs/chef-station-demo.mp4)
-
-[Watch the demo video](docs/chef-station-demo.mp4) (50 seconds, with narration). It shows the tray in a Claude Code session as `/chef` moves through each station in turn: Usage, with the plan's rate limits, today's spend and the current session; Trend, with today's spend by hour; Breakdown, with spend by model and by project; and Activity, with thirteen weeks of tokens per day.
+https://github.com/user-attachments/assets/33ad4494-3bfb-48da-80f3-af303e1bfc2a
 
 ## Stations
 
