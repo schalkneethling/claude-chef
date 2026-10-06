@@ -67,10 +67,18 @@ export function countdown(ms: number): string {
   return `${minutes}m`;
 }
 
-/** Time since something began, as hours and minutes: "0:33". */
+/** A stopwatch reading: "0:33", "12:05", and past an hour "1:02:03". */
 export function elapsed(ms: number): string {
-  const minutes = Math.max(0, Math.floor(ms / 60_000));
-  return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}`;
+  const seconds = Math.max(0, Math.floor(ms / 1_000));
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const pad = (value: number) => String(value).padStart(2, "0");
+
+  if (hours > 0) {
+    return `${hours}:${pad(minutes % 60)}:${pad(seconds % 60)}`;
+  }
+
+  return `${minutes}:${pad(seconds % 60)}`;
 }
 
 /** A horizontal meter `width` cells wide, split so each part can take its own color. */

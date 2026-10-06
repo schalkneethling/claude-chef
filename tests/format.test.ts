@@ -29,8 +29,10 @@ describe("format", () => {
     expect(countdown(2 * hour + 10 * 60_000)).toBe("2h 10m");
     expect(countdown(9 * 60_000)).toBe("9m");
     expect(countdown(-1)).toBe("now");
-    expect(elapsed(33 * 60_000)).toBe("0:33");
-    expect(elapsed(25 * hour + 60_000)).toBe("25:01");
+    expect(elapsed(33_400)).toBe("0:33");
+    expect(elapsed(12 * 60_000 + 5_000)).toBe("12:05");
+    expect(elapsed(hour + 2 * 60_000 + 3_000)).toBe("1:02:03");
+    expect(elapsed(-5)).toBe("0:00");
   });
 
   test("a bar fills in proportion", async () => {

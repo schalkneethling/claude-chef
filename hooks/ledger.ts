@@ -1,8 +1,10 @@
-import type { ChefStationDay, ChefStationLedger } from "../types";
+import type { ChefStationBackfill, ChefStationDay, ChefStationLedger } from "../types";
+import { dayKey } from "./transcript.mjs";
+
+export { dayKey };
 
 /** How far back the ledger remembers: the thirteen weeks the activity grid shows. */
 export const WEEKS = 13;
-const DAY_MS = 86_400_000;
 
 export type TurnUsage = {
   input: number;
@@ -18,6 +20,8 @@ export type TurnRecord = {
   usd: number;
   model: string;
   project: string;
+  /** The session the turn ran in, so a scan of the transcripts does not count it again. */
+  sessionId: string;
   usage?: TurnUsage;
 };
 
@@ -49,15 +53,6 @@ function emptyDay(): ChefStationDay {
   };
 }
 
-/** The local calendar date of a moment, as `YYYY-MM-DD`. */
-export function dayKey(ms: number): string {
-  const date = new Date(ms);
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-
-  return `${date.getFullYear()}-${month}-${day}`;
-}
-
 /** Midnight, local time, `days` days before the day of `ms`. */
 function startOfDay(ms: number, daysBack = 0): number {
   const date = new Date(ms);
@@ -86,7 +81,24 @@ export function recordTurn(ledger: ChefStationLedger, turn: TurnRecord): ChefSta
     projects: addTo(before.projects, turn.project, turn.usd),
   };
 
-  return prune({ version: 1, days: { ...ledger.days, [key]: day } }, turn.at);
+  return prune(
+    {
+      ...ledger,
+      days: { ...ledger.days, [key]: day },
+      liveSessions: { ...ledger.liveSessions, [turn.sessionId]: key },
+    },
+    turn.at,
+  );
+}
+
+/** Puts a fresh scan of the transcripts in place of the last one. */
+export function withBackfill(ledger: ChefStationLedger, backfill: ChefStationBackfill): ChefStationLedger {
+  return prune({ ...ledger, backfill }, backfill.scannedAt);
+}
+
+/** The earliest moment a scan needs to read: the first day the ledger keeps. */
+export function backfillSince(now: number): number {
+  return startOfDay(now, WEEKS * 7 - 1);
 }
 
 function addTo(record: Record<string, number>, name: string, usd: number): Record<string, number> {
@@ -94,14 +106,76 @@ function addTo(record: Record<string, number>, name: string, usd: number): Recor
 }
 
 function prune(ledger: ChefStationLedger, now: number): ChefStationLedger {
-  const oldest = dayKey(startOfDay(now, WEEKS * 7));
-  const days = Object.fromEntries(Object.entries(ledger.days).filter(([key]) => key > oldest));
+  const oldest = dayKey(backfillSince(now));
+  const isKept = ([key]: [string, unknown]) => key >= oldest;
+  const keepDays = (days: Record<string, ChefStationDay>) => Object.fromEntries(Object.entries(days).filter(isKept));
+  // Sessions are keyed by id with their last day as the value.
+  const liveSessions = Object.fromEntries(Object.entries(ledger.liveSessions ?? {}).filter(([, key]) => key >= oldest));
 
-  return { version: 1, days };
+  return {
+    version: 1,
+    days: keepDays(ledger.days),
+    liveSessions,
+    ...(ledger.backfill ? { backfill: { ...ledger.backfill, days: keepDays(ledger.backfill.days) } } : {}),
+  };
+}
+
+/** One day as the tray shows it: what was recorded live plus what the last scan found. */
+function dayOf(ledger: ChefStationLedger, key: string): ChefStationDay | undefined {
+  const live = ledger.days[key];
+  const scanned = ledger.backfill?.days[key];
+
+  return live && scanned ? addDays(live, scanned) : (live ?? scanned);
+}
+
+function addDays(first: ChefStationDay, second: ChefStationDay): ChefStationDay {
+  return {
+    usd: first.usd + second.usd,
+    tokens: first.tokens + second.tokens,
+    cacheReadTokens: first.cacheReadTokens + second.cacheReadTokens,
+    inputTokens: first.inputTokens + second.inputTokens,
+    hours: first.hours.map((usd, hour) => usd + (second.hours[hour] ?? 0)),
+    models: sumRecords(first.models, second.models),
+    projects: sumRecords(first.projects, second.projects),
+  };
+}
+
+/**
+ * The ledger the tray reads, put together from the turns each session stored
+ * under a key of its own and the last scan of the transcripts. Each session
+ * writing only its own key keeps two sessions from overwriting each other.
+ */
+export function composeLedger(
+  sessions: Record<string, ChefStationLedger>,
+  backfill: ChefStationBackfill | undefined,
+  now: number,
+): ChefStationLedger {
+  const days: Record<string, ChefStationDay> = {};
+  const liveSessions: Record<string, string> = {};
+
+  for (const part of Object.values(sessions)) {
+    for (const [key, day] of Object.entries(part.days)) {
+      const before = days[key];
+      days[key] = before ? addDays(before, day) : day;
+    }
+
+    Object.assign(liveSessions, part.liveSessions);
+  }
+
+  return prune({ version: 1, days, liveSessions, ...(backfill ? { backfill } : {}) }, now);
+}
+
+/** Whether every day a session stored has fallen out of the thirteen weeks. */
+export function isStale(ledger: ChefStationLedger, now: number): boolean {
+  return Object.keys(prune(ledger, now).days).length === 0;
+}
+
+function sumRecords(first: Record<string, number>, second: Record<string, number>): Record<string, number> {
+  return Object.entries(second).reduce((sum, [name, usd]) => addTo(sum, name, usd), first);
 }
 
 export function today(ledger: ChefStationLedger, now: number): ChefStationDay {
-  return ledger.days[dayKey(now)] ?? emptyDay();
+  return dayOf(ledger, dayKey(now)) ?? emptyDay();
 }
 
 export function hourly(ledger: ChefStationLedger, now: number): number[] {
@@ -128,7 +202,7 @@ export function activity(ledger: ChefStationLedger, now: number): Activity {
 
   for (let index = 0; index < daysShown; index++) {
     const key = dayKey(startOfDay(now, daysShown - 1 - index));
-    const tokens = ledger.days[key]?.tokens ?? 0;
+    const tokens = dayOf(ledger, key)?.tokens ?? 0;
     weeks[Math.floor(index / 7)]![index % 7] = tokens;
 
     if (tokens > 0) {
@@ -145,7 +219,7 @@ export function activity(ledger: ChefStationLedger, now: number): Activity {
 }
 
 function streak(ledger: ChefStationLedger, now: number): number {
-  const isActive = (daysBack: number) => (ledger.days[dayKey(startOfDay(now, daysBack))]?.tokens ?? 0) > 0;
+  const isActive = (daysBack: number) => (dayOf(ledger, dayKey(startOfDay(now, daysBack)))?.tokens ?? 0) > 0;
   let daysBack = isActive(0) ? 0 : 1;
   let count = 0;
 

@@ -29,7 +29,30 @@ export type ChefStationDay = {
  */
 export type ChefStationLedger = {
   version: 1;
+  /** What the tray recorded live, turn by turn. */
   days: Record<string, ChefStationDay>;
+  /** Sessions the tray recorded live, with the last day it saw each, so a backfill skips them. */
+  liveSessions?: Record<string, string>;
+  /** What the last scan of Claude Code's transcripts found, for every other session. */
+  backfill?: ChefStationBackfill;
+};
+
+/**
+ * The days a scan of `~/.claude/projects` tallied. Models are keyed by
+ * display name and costs are estimated from list prices, as the transcripts
+ * hold token counts and no cost.
+ */
+export type ChefStationBackfill = {
+  days: Record<string, ChefStationDay>;
+  /** When the scan finished, in milliseconds since the epoch. */
+  scannedAt: number;
+  /** `node` when the helper script ran, `fs` when the mod read the files itself. */
+  source: "node" | "fs";
+  files: number;
+  /** Transcripts too large for the mod to read itself (only when Node was not found). */
+  skippedFiles: number;
+  /** Model ids with no known price; their tokens count but their cost does not. */
+  unpricedModels: string[];
 };
 
 /**
@@ -44,6 +67,10 @@ export type ChefStationLive = {
   usd: number;
   /** When the session began, in milliseconds since the epoch. */
   startedAt: number;
+  /** When the running turn began; absent while the session is idle. */
+  turnStartedAt?: number;
+  /** How long the last completed turn took, in milliseconds. */
+  lastTurnMs?: number;
   /** The context window's fill, 0 to 100, when a response reported one. */
   contextPercent?: number;
   /** The account's rate-limit windows, as the last response reported them. */
@@ -69,6 +96,8 @@ declare module "claude-code" {
       now: number;
       /** The session cost already written to the ledger, so no turn counts twice. */
       recordedUsd: number;
+      /** Whether a scan of the transcripts is running, and what the last one said. */
+      backfillStatus: { isRunning: boolean; message?: string };
     };
   }
 }

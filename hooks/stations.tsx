@@ -2,7 +2,7 @@ import type { Elements, RenderChildren } from "claude-code";
 
 import type { ChefStationLedger, ChefStationLive, ChefStationName } from "../types";
 import { bar, countdown, elapsed, money, short, verticalBars } from "./format";
-import { activity, dayKey, hourly, ranked, today } from "./ledger";
+import { activity, hourly, ranked, today } from "./ledger";
 
 /** The elements a station draws with; the terminal's and the desktop's tables both have them. */
 export type Ui = Pick<Elements["terminal"], "Box" | "Text" | "Button">;
@@ -14,6 +14,8 @@ export type TrayView = {
   live?: ChefStationLive;
   now: number;
   plan?: string;
+  /** Whether a scan of the transcripts is running, and what the last one said. */
+  backfillStatus?: { isRunning: boolean; message?: string };
   isWorking: boolean;
   columns: number;
   onSelect: (station: ChefStationName) => void;
@@ -128,6 +130,14 @@ function usage({ ui, ledger, live, now, isWorking, columns }: TrayView) {
     <Text dimColor>{` API value · ${short(day.tokens)} tokens · ${cachePercent}% from cache`}</Text>,
   );
 
+  // The running turn's stopwatch, or how long the last turn took once it is done.
+  const turnTime =
+    live?.turnStartedAt !== undefined ? (
+      <Text color={ACCENT} bold>{`  ${elapsed(now - live.turnStartedAt)}`}</Text>
+    ) : live?.lastTurnMs !== undefined ? (
+      <Text dimColor>{`  last turn ${elapsed(live.lastTurnMs)}`}</Text>
+    ) : null;
+
   const nowRow = live
     ? row(
         ui,
@@ -141,10 +151,10 @@ function usage({ ui, ledger, live, now, isWorking, columns }: TrayView) {
             ` · ${live.model}`,
             ` · ${short(live.outputTokens)} written`,
             ` · ${money(live.usd)}`,
-            ` · ${elapsed(now - live.startedAt)}`,
             live.contextPercent === undefined ? "" : ` · context ${Math.round(live.contextPercent)}%`,
           ].join("")}
         </Text>,
+        turnTime,
       )
     : null;
 
@@ -242,11 +252,10 @@ function breakdown({ ui, ledger, now, columns }: TrayView) {
 const SHADES = ["░░", "▒▒", "▓▓", "██"];
 const WEEKDAYS = ["Mon", "", "Wed", "", "Fri", "", "Sun"];
 
-function activityGrid({ ui, ledger, now, columns }: TrayView) {
+function activityGrid({ ui, ledger, now, columns, backfillStatus }: TrayView) {
   const { Box, Text } = ui;
   const grid = activity(ledger, now);
   const top = Math.max(...grid.weeks.flat().map((tokens) => tokens ?? 0), 0);
-  const todayKey = dayKey(now);
 
   const cell = (tokens: number | null) => {
     if (tokens === null) {
@@ -290,15 +299,26 @@ function activityGrid({ ui, ledger, now, columns }: TrayView) {
       <Text>
         <Text dimColor>Streak </Text>
         <Text color={ACCENT}>{`${grid.streak} ${grid.streak === 1 ? "day" : "days"}`}</Text>
-        {(ledger.days[todayKey]?.tokens ?? 0) > 0 ? "" : " (cook today to keep it)"}
+        {today(ledger, now).tokens > 0 ? "" : " (cook today to keep it)"}
       </Text>
     </Box>
   );
 
+  const history = backfillStatus?.isRunning
+    ? "Reading your Claude Code history…"
+    : ledger.backfill
+      ? `History from ${ledger.backfill.files} transcripts, estimated at list prices. /chef backfill rescans it.`
+      : "Only turns since the tray was installed. /chef backfill reads your earlier history.";
+
   return (
-    <Box flexDirection={columns >= 60 ? "row" : "column"} marginTop={1}>
-      <Box flexDirection="column">{rows}</Box>
-      {stats}
+    <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection={columns >= 60 ? "row" : "column"}>
+        <Box flexDirection="column">{rows}</Box>
+        {stats}
+      </Box>
+      <Text dimColor wrap="wrap">
+        {history}
+      </Text>
     </Box>
   );
 }
