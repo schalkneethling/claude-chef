@@ -147,3 +147,6 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Claude Code lays these type declarations beside a mod it loads
+.claude-plugin/types/

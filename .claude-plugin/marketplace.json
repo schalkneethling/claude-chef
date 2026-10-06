@@ -1,0 +1,13 @@
+{
+  "name": "chef-station",
+  "description": "Chef Station, a Claude Code mod that keeps an eye on the kitchen.",
+  "owner": {
+    "name": "Schalk Neethling"
+  },
+  "plugins": [
+    {
+      "name": "chef-station",
+      "source": "./"
+    }
+  ]
+}
