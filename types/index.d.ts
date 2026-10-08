@@ -11,6 +11,12 @@ export type ChefStationContextCategory = {
   kind: "used" | "free" | "buffer" | "deferred";
 };
 
+export type ChefStationContextAction = {
+  isRunning: boolean;
+  isConfirmingClear: boolean;
+  message?: string;
+};
+
 /** The context window broken down by category, as the last measurement found it. */
 export type ChefStationContext = {
   categories: ChefStationContextCategory[];
@@ -117,6 +123,8 @@ declare module "claude-code" {
       recordedUsd: number;
       /** The context window by category, refreshed after each turn; null before the first measurement. */
       context: ChefStationContext | null;
+      /** The Context station's Clear and Compact: whether one is running, whether Clear awaits confirmation, and what the last one said. */
+      contextAction: ChefStationContextAction;
       /** Whether a scan of the transcripts is running, and what the last one said. */
       backfillStatus: { isRunning: boolean; message?: string };
     };

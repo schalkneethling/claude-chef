@@ -64,6 +64,9 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
     breakdown: breakdownOf(3_000, 9_000) as unknown,
     scan: EMPTY_SCAN as unknown,
     scanCalls: [] as { argv: readonly string[]; stdin?: string }[],
+    /** Slash commands the mod ran, other than its own. */
+    commandsRun: [] as string[],
+    compactions: 0,
     /** Whether the Node helper is missing, so the mod reads the transcripts itself. */
     hasNoNode: false,
     rateLimits: [
@@ -103,6 +106,14 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
     },
   }));
   on("turn.complete", () => ({ text: "" }));
+  on("command.run", { command: "clear" }, ($, e) => {
+    figures.commandsRun.push(e.command);
+    return { text: "" };
+  });
+  on("session.compact", () => {
+    figures.compactions += 1;
+    return { messages: [{ role: "user", text: "Summary of the conversation so far.", toolUses: [] }], tokensBefore: 120_000, tokensAfter: 18_000 } as any;
+  });
 
   return { figures, clock };
 }
@@ -396,6 +407,66 @@ describe("chef-station", () => {
 
     const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
     expect(await ui.find({ type: "Text", text: "60k of 200k tokens (30%)" })).toBeDefined();
+    await ui.unmount();
+  });
+
+  test("Compact compacts the conversation and says how much it saved", async ($, on) => {
+    const { figures } = kitchen(on);
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    await $.command.run({ command: "chef", args: "context" } as any);
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+
+    await ui.press({ key: "context-compact" });
+
+    expect(figures.compactions).toBe(1);
+    expect(await ui.find({ type: "Text", text: "Compacted from 120k to 18k tokens." })).toBeDefined();
+    await ui.unmount();
+  });
+
+  test("Clear asks first, and only clears once confirmed", async ($, on) => {
+    const { figures } = kitchen(on);
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    await $.command.run({ command: "chef", args: "context" } as any);
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+
+    await ui.press({ key: "context-clear" });
+    expect(figures.commandsRun).toEqual([]);
+    expect(await ui.find({ type: "Text", text: /^Clear the conversation\?/ })).toBeDefined();
+
+    await ui.press({ key: "context-clear-cancel" });
+    expect(await ui.find({ type: "Text", text: /^Clear the conversation\?/ })).toBeUndefined();
+    expect(figures.commandsRun).toEqual([]);
+
+    await ui.press({ key: "context-clear" });
+    await ui.press({ key: "context-clear-confirm" });
+    expect(figures.commandsRun).toEqual(["clear"]);
+    expect(await ui.find({ type: "Text", text: /^Clear the conversation\?/ })).toBeUndefined();
+    await ui.unmount();
+  });
+
+  test("while Claude is working, the buttons give way to a note", async ($, on) => {
+    kitchen(on);
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    await $.command.run({ command: "chef", args: "context" } as any);
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal", props: { ...BAND.props, isWorking: true } } as any);
+
+    expect(await ui.find({ key: "context-compact" })).toBeUndefined();
+    expect(await ui.find({ key: "context-clear" })).toBeUndefined();
+    expect(await ui.find({ type: "Text", text: "Clear and Compact are available once Claude finishes." })).toBeDefined();
+    await ui.unmount();
+  });
+
+  test("a session cost that starts over, as after /clear, is still recorded", async ($, on) => {
+    const { figures } = kitchen(on);
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+
+    figures.usd = 5;
+    await $.turn.complete(opusTurn as any);
+    figures.usd = 0.5;
+    await $.turn.complete(opusTurn as any);
+
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+    expect(await ui.find({ type: "Text", text: /^\$5\.50$/ })).toBeDefined();
     await ui.unmount();
   });
 });

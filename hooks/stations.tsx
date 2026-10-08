@@ -1,6 +1,6 @@
 import type { Elements, RenderChildren } from "claude-code";
 
-import type { ChefStationContext, ChefStationLedger, ChefStationLive, ChefStationName } from "../types";
+import type { ChefStationContext, ChefStationContextAction, ChefStationLedger, ChefStationLive, ChefStationName } from "../types";
 import { allocateCells, contextSegments } from "./context";
 import { bar, countdown, elapsed, money, short, verticalBars } from "./format";
 import { activity, hourly, ranked, today } from "./ledger";
@@ -19,6 +19,9 @@ export type TrayView = {
   backfillStatus?: { isRunning: boolean; message?: string };
   /** The context window by category; null until the first measurement. */
   context?: ChefStationContext | null;
+  /** Whether Clear or Compact is running, whether Clear awaits confirmation, and what the last one said. */
+  contextAction?: ChefStationContextAction;
+  onContextAction?: (action: "compact" | "clear" | "confirm-clear" | "cancel-clear") => void;
   isWorking: boolean;
   columns: number;
   onSelect: (station: ChefStationName) => void;
@@ -332,7 +335,7 @@ function activityGrid({ ui, ledger, now, columns, backfillStatus }: TrayView) {
 /** Each legend entry's width, so entries line up in columns as they wrap. */
 const LEGEND_ENTRY_WIDTH = 36;
 
-function contextWindow({ ui, context, columns }: TrayView) {
+function contextWindow({ ui, context, columns, isWorking, contextAction, onContextAction }: TrayView) {
   const { Box, Text } = ui;
 
   if (!context) {
@@ -378,6 +381,61 @@ function contextWindow({ ui, context, columns }: TrayView) {
           </Box>
         ))}
       </Box>
+      {contextActions(ui, isWorking, contextAction, onContextAction)}
+    </Box>
+  );
+}
+
+/**
+ * Compact and Clear. Neither can run during a turn (compacting is refused,
+ * and a /clear would wait for the turn to end), so while Claude works the
+ * buttons give way to a note. Clear ends the conversation, so it asks first.
+ */
+function contextActions(
+  ui: Ui,
+  isWorking: boolean,
+  action: ChefStationContextAction | undefined,
+  onAction: TrayView["onContextAction"],
+) {
+  const { Box, Text, Button } = ui;
+  const message = action?.message ? <Text dimColor>{action.message}</Text> : null;
+
+  if (action?.isRunning) {
+    return (
+      <Box marginTop={1}>
+        <Text dimColor>Working on it…</Text>
+      </Box>
+    );
+  }
+
+  if (isWorking) {
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text dimColor>Clear and Compact are available once Claude finishes.</Text>
+        {message}
+      </Box>
+    );
+  }
+
+  if (action?.isConfirmingClear) {
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text>Clear the conversation? It ends here and a new one starts with an empty context.</Text>
+        <Box flexDirection="row" columnGap={1}>
+          <Button key="context-clear-confirm" label="Clear conversation" hotkey="y" variant="primary" onPress={() => onAction?.("confirm-clear")} />
+          <Button key="context-clear-cancel" label="Cancel" hotkey="n" onPress={() => onAction?.("cancel-clear")} />
+        </Box>
+      </Box>
+    );
+  }
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="row" columnGap={1}>
+        <Button key="context-compact" label="Compact" hotkey="c" onPress={() => onAction?.("compact")} />
+        <Button key="context-clear" label="Clear" hotkey="x" onPress={() => onAction?.("clear")} />
+      </Box>
+      {message}
     </Box>
   );
 }
