@@ -11,6 +11,48 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 100 },
 } as const;
 
+/** The context window as /context breaks it down, with the given system prompt and messages. */
+function breakdownOf(systemPrompt: number, messages: number) {
+  const used = systemPrompt + 12_000 + messages;
+
+  return {
+    categories: [
+      { name: "System prompt", tokens: systemPrompt, kind: "used", color: "promptBorder", isDeferred: false },
+      { name: "System tools", tokens: 12_000, kind: "used", color: "inactive", isDeferred: false },
+      { name: "MCP tools", tokens: 40_000, kind: "deferred", color: "inactive", isDeferred: true },
+      { name: "Messages", tokens: messages, kind: "used", color: "permission", isDeferred: false },
+      { name: "Free space", tokens: 200_000 - used - 33_000, kind: "free", color: "inactive", isDeferred: false },
+      { name: "Autocompact buffer", tokens: 33_000, kind: "buffer", color: "inactive", isDeferred: false },
+    ],
+    totalTokens: used,
+    maxTokens: 200_000,
+    rawMaxTokens: 200_000,
+    percentage: Math.round((used / 200_000) * 100),
+  };
+}
+
+/** The colors of the context bar's segments, left to right: the Texts drawn with block or shade glyphs in the first row that has several. */
+async function barColors(ui: { drawn: () => Promise<unknown> }): Promise<string[]> {
+  const rows: string[][] = [];
+  const walk = (node: any) => {
+    if (!node || typeof node !== "object") {
+      return;
+    }
+
+    const children: any[] = node.children ?? [];
+    const segments = children.filter((child) => child?.type === "Text" && /^ ?[█░▒]+$/.test((child.children ?? []).join("")));
+
+    if (node.type === "Box" && segments.length > 1) {
+      rows.push(segments.map((child) => child.props?.color));
+    }
+
+    children.forEach(walk);
+  };
+
+  walk(await ui.drawn());
+  return rows[0] ?? [];
+}
+
 /** What the Node helper prints when it finds nothing. */
 const EMPTY_SCAN = { days: {}, unpricedModels: [], files: 0, skippedFiles: 0, responses: 0 };
 
@@ -19,8 +61,12 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
   const figures = {
     usd: 0,
     model: "claude-opus-5-5[1m]",
+    breakdown: breakdownOf(3_000, 9_000) as unknown,
     scan: EMPTY_SCAN as unknown,
     scanCalls: [] as { argv: readonly string[]; stdin?: string }[],
+    /** Slash commands the mod ran, other than its own. */
+    commandsRun: [] as string[],
+    compactions: 0,
     /** Whether the Node helper is missing, so the mod reads the transcripts itself. */
     hasNoNode: false,
     rateLimits: [
@@ -46,15 +92,28 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
     return { value: { exitCode: 0, stdout: JSON.stringify(figures.scan), stderr: "", isStdoutTruncated: false, isStderrTruncated: false } };
   });
   on("command.register", ($, e) => ({ value: { command: e.name } }));
-  on("session.usage", () => ({
+  on("session.usage", ($, e) => ({
     value: {
       startedAt: START,
-      context: { tokens: 36_000, window: 200_000, percent: 18 },
+      context: {
+        tokens: 36_000,
+        window: 200_000,
+        percent: 18,
+        ...(e?.breakdown ? { breakdown: figures.breakdown as any } : {}),
+      },
       rateLimits: figures.rateLimits,
       cost: { usd: figures.usd },
     },
   }));
   on("turn.complete", () => ({ text: "" }));
+  on("command.run", { command: "clear" }, ($, e) => {
+    figures.commandsRun.push(e.command);
+    return { text: "" };
+  });
+  on("session.compact", () => {
+    figures.compactions += 1;
+    return { messages: [{ role: "user", text: "Summary of the conversation so far.", toolUses: [] }], tokensBefore: 120_000, tokensAfter: 18_000 } as any;
+  });
 
   return { figures, clock };
 }
@@ -168,7 +227,7 @@ describe("chef-station", () => {
     await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
 
     expect(await $.command.run({ command: "chef", args: "activity" } as any)).toMatchObject({ text: "Chef tray: activity" });
-    expect(await $.command.run({ command: "chef", args: "" } as any)).toMatchObject({ text: "Chef tray: usage" });
+    expect(await $.command.run({ command: "chef", args: "" } as any)).toMatchObject({ text: "Chef tray: context" });
     expect(await $.command.run({ command: "chef", args: "pantry" } as any)).toMatchObject({ text: expect.stringContaining("No station") });
   });
 
@@ -321,6 +380,136 @@ describe("chef-station", () => {
     figures.model = "claude-sonnet-5-5";
     await $.turn.start({ text: "cook", turnId: "t2" } as any);
     expect(await ui.find({ type: "Text", text: /^ · Sonnet 5\.5 · / })).toBeDefined();
+    await ui.unmount();
+  });
+
+  test("the context station breaks the window down by category, and follows each turn", async ($, on) => {
+    const { figures } = kitchen(on);
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    expect(await $.command.run({ command: "chef", args: "context" } as any)).toMatchObject({ text: "Chef tray: context" });
+
+    for (const surface of ["terminal", "desktop"] as const) {
+      const ui = await $.ui.mount({ ...BAND, surface } as any);
+
+      expect(await ui.find({ type: "Text", text: "24k of 200k tokens (12%)" })).toBeDefined();
+      expect(await ui.find({ type: "Text", text: "System prompt" })).toBeDefined();
+      expect(await ui.find({ type: "Text", text: "Messages" })).toBeDefined();
+      expect(await ui.find({ type: "Text", text: "Autocompact buffer" })).toBeDefined();
+      // Schemas loaded on demand sit outside the window.
+      expect(await ui.find({ type: "Text", text: "MCP tools" })).toBeUndefined();
+      // The bar hands out colors in its own order, then draws free space and the buffer as textures.
+      expect(await barColors(ui)).toEqual(["#3987e5", "#d95926", "#199e70", "subtle", "subtle"]);
+      await ui.unmount();
+    }
+
+    figures.breakdown = breakdownOf(3_000, 45_000);
+    await $.turn.complete(opusTurn as any);
+
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+    expect(await ui.find({ type: "Text", text: "60k of 200k tokens (30%)" })).toBeDefined();
+    await ui.unmount();
+  });
+
+  test("Compact compacts the conversation and says how much it saved", async ($, on) => {
+    const { figures } = kitchen(on);
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    await $.command.run({ command: "chef", args: "context" } as any);
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+
+    await ui.press({ key: "context-compact" });
+
+    expect(figures.compactions).toBe(1);
+    expect(await ui.find({ type: "Text", text: "Compacted from 120k to 18k tokens." })).toBeDefined();
+    await ui.unmount();
+  });
+
+  test("Clear asks first, and only clears once confirmed", async ($, on) => {
+    const { figures } = kitchen(on);
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    await $.command.run({ command: "chef", args: "context" } as any);
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+
+    await ui.press({ key: "context-clear" });
+    expect(figures.commandsRun).toEqual([]);
+    expect(await ui.find({ type: "Text", text: /^Clear the conversation\?/ })).toBeDefined();
+
+    await ui.press({ key: "context-clear-cancel" });
+    expect(await ui.find({ type: "Text", text: /^Clear the conversation\?/ })).toBeUndefined();
+    expect(figures.commandsRun).toEqual([]);
+
+    await ui.press({ key: "context-clear" });
+    await ui.press({ key: "context-clear-confirm" });
+    expect(figures.commandsRun).toEqual(["clear"]);
+    expect(await ui.find({ type: "Text", text: /^Clear the conversation\?/ })).toBeUndefined();
+    await ui.unmount();
+  });
+
+  test("while Claude is working, the buttons give way to a note", async ($, on) => {
+    kitchen(on);
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    await $.command.run({ command: "chef", args: "context" } as any);
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal", props: { ...BAND.props, isWorking: true } } as any);
+
+    expect(await ui.find({ key: "context-compact" })).toBeUndefined();
+    expect(await ui.find({ key: "context-clear" })).toBeUndefined();
+    expect(await ui.find({ type: "Text", text: "Clear and Compact are available once Claude finishes." })).toBeDefined();
+    await ui.unmount();
+  });
+
+  test("a session cost that starts over, as after /clear, is still recorded", async ($, on) => {
+    const { figures } = kitchen(on);
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+
+    figures.usd = 5;
+    await $.turn.complete(opusTurn as any);
+    figures.usd = 0.5;
+    await $.turn.complete(opusTurn as any);
+
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+    expect(await ui.find({ type: "Text", text: /^\$5\.50$/ })).toBeDefined();
+    await ui.unmount();
+  });
+
+  test("pressing Compact twice in quick succession compacts once", async ($, on) => {
+    const { figures } = kitchen(on);
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    await $.command.run({ command: "chef", args: "context" } as any);
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+
+    await Promise.all([ui.press({ key: "context-compact" }), ui.press({ key: "context-compact" })]);
+
+    expect(figures.compactions).toBe(1);
+    await ui.unmount();
+  });
+
+  test("after /clear, the first turn's cost counts in full even when it exceeds the old total", async ($, on) => {
+    const { figures } = kitchen(on);
+    on("session.end", ($, e) => ({ sessionId: e.sessionId }));
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+
+    figures.usd = 0.3;
+    await $.turn.complete(opusTurn as any);
+    await $.session.end({ reason: "clear", sessionId: "this-session", resume: {} } as any);
+    figures.usd = 0.5;
+    await $.turn.complete(opusTurn as any);
+
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+    expect(await ui.find({ type: "Text", text: /^\$0\.80$/ })).toBeDefined();
+    await ui.unmount();
+  });
+
+  test("after a typed /clear, the Context station stops showing the previous conversation", async ($, on) => {
+    kitchen(on);
+    on("session.end", ($, e) => ({ sessionId: e.sessionId }));
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    await $.command.run({ command: "chef", args: "context" } as any);
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+    expect(await ui.find({ type: "Text", text: "24k of 200k tokens (12%)" })).toBeDefined();
+
+    await $.session.end({ reason: "clear", sessionId: "this-session", resume: {} } as any);
+
+    expect(await ui.find({ type: "Text", text: "24k of 200k tokens (12%)" })).toBeUndefined();
+    expect(await ui.find({ type: "Text", text: "Measuring the context window…" })).toBeDefined();
     await ui.unmount();
   });
 });

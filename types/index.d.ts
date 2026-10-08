@@ -1,7 +1,30 @@
 /**
  * The four stations of the tray, one per card of the overview.
  */
-export type ChefStationName = "usage" | "trend" | "breakdown" | "activity";
+export type ChefStationName = "usage" | "trend" | "breakdown" | "activity" | "context";
+
+/** One row of the context window's breakdown, as /context lists it. */
+export type ChefStationContextCategory = {
+  name: string;
+  tokens: number;
+  /** `used` fills the window, `free` is what is left, `buffer` the compaction reserve, `deferred` schemas outside the window. */
+  kind: "used" | "free" | "buffer" | "deferred";
+};
+
+export type ChefStationContextAction = {
+  isRunning: boolean;
+  isConfirmingClear: boolean;
+  message?: string;
+};
+
+/** The context window broken down by category, as the last measurement found it. */
+export type ChefStationContext = {
+  categories: ChefStationContextCategory[];
+  /** Tokens in use. */
+  totalTokens: number;
+  /** The window measured against: the model's limit, or a smaller compaction window. */
+  maxTokens: number;
+};
 
 /**
  * What one calendar day (local time) has cost, across every session.
@@ -98,6 +121,10 @@ declare module "claude-code" {
       now: number;
       /** The session cost already written to the ledger, so no turn counts twice. */
       recordedUsd: number;
+      /** The context window by category, refreshed after each turn; null before the first measurement. */
+      context: ChefStationContext | null;
+      /** The Context station's Clear and Compact: whether one is running, whether Clear awaits confirmation, and what the last one said. */
+      contextAction: ChefStationContextAction;
       /** Whether a scan of the transcripts is running, and what the last one said. */
       backfillStatus: { isRunning: boolean; message?: string };
     };

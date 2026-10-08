@@ -1,6 +1,7 @@
 import type { Elements, RenderChildren } from "claude-code";
 
-import type { ChefStationLedger, ChefStationLive, ChefStationName } from "../types";
+import type { ChefStationContext, ChefStationContextAction, ChefStationLedger, ChefStationLive, ChefStationName } from "../types";
+import { allocateCells, contextSegments } from "./context";
 import { bar, countdown, elapsed, money, short, verticalBars } from "./format";
 import { activity, hourly, ranked, today } from "./ledger";
 
@@ -16,6 +17,11 @@ export type TrayView = {
   plan?: string;
   /** Whether a scan of the transcripts is running, and what the last one said. */
   backfillStatus?: { isRunning: boolean; message?: string };
+  /** The context window by category; null until the first measurement. */
+  context?: ChefStationContext | null;
+  /** Whether Clear or Compact is running, whether Clear awaits confirmation, and what the last one said. */
+  contextAction?: ChefStationContextAction;
+  onContextAction?: (action: "compact" | "clear" | "confirm-clear" | "cancel-clear") => void;
   isWorking: boolean;
   columns: number;
   onSelect: (station: ChefStationName) => void;
@@ -26,6 +32,7 @@ export const STATIONS: { name: ChefStationName; label: string; hotkey: string }[
   { name: "trend", label: "Trend", hotkey: "2" },
   { name: "breakdown", label: "Breakdown", hotkey: "3" },
   { name: "activity", label: "Activity", hotkey: "4" },
+  { name: "context", label: "Context", hotkey: "5" },
 ];
 
 const RATE_LIMIT_LABELS: Record<string, string> = {
@@ -74,6 +81,7 @@ function header({ ui, station, plan, onSelect }: TrayView) {
   );
 }
 
+/** The body of the station the tray shows. */
 function station(view: TrayView) {
   switch (view.station) {
     case "trend":
@@ -82,6 +90,8 @@ function station(view: TrayView) {
       return breakdown(view);
     case "activity":
       return activityGrid(view);
+    case "context":
+      return contextWindow(view);
     default:
       return usage(view);
   }
@@ -319,6 +329,118 @@ function activityGrid({ ui, ledger, now, columns, backfillStatus }: TrayView) {
       <Text dimColor wrap="wrap">
         {history}
       </Text>
+    </Box>
+  );
+}
+
+/** Each legend entry's width, so entries line up in columns as they wrap. */
+const LEGEND_ENTRY_WIDTH = 36;
+
+/**
+ * The Context station: the window as one bar of categories, a legend that
+ * names each color with its tokens and share, and the Compact and Clear buttons.
+ */
+function contextWindow({ ui, context, columns, isWorking, contextAction, onContextAction }: TrayView) {
+  const { Box, Text } = ui;
+
+  if (!context) {
+    return (
+      <Box marginTop={1}>
+        <Text dimColor>Measuring the context window…</Text>
+      </Box>
+    );
+  }
+
+  const segments = contextSegments(context.categories);
+  // A one-cell gap separates segments, so a boundary shows without relying on color.
+  const gaps = Math.max(0, segments.length - 1);
+  const cells = allocateCells(
+    segments.map((segment) => segment.tokens),
+    Math.max(10, columns - 2 - gaps),
+  );
+  const share = (tokens: number) => {
+    const percent = (tokens / context.maxTokens) * 100;
+    return percent > 0 && percent < 1 ? "<1%" : `${Math.round(percent)}%`;
+  };
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="row" columnGap={1}>
+        <Text bold>Context window</Text>
+        <Text dimColor>{`${short(context.totalTokens)} of ${short(context.maxTokens)} tokens (${share(context.totalTokens)})`}</Text>
+      </Box>
+      <Box flexDirection="row">
+        {segments.map((segment, index) => (
+          <Text color={segment.color}>{(index > 0 ? " " : "") + segment.glyph.repeat(cells[index] ?? 0)}</Text>
+        ))}
+      </Box>
+      {/* Identity is never color alone: every color in the bar is named here, in the text color. */}
+      <Box flexDirection="row" flexWrap="wrap" marginTop={1}>
+        {segments.map((segment) => (
+          <Box flexDirection="row" width={LEGEND_ENTRY_WIDTH} columnGap={1}>
+            <Text color={segment.color}>{segment.glyph.repeat(2)}</Text>
+            <Box width={20} flexShrink={1}>
+              <Text wrap="truncate-end">{segment.name}</Text>
+            </Box>
+            <Text dimColor>{`${short(segment.tokens)} · ${share(segment.tokens)}`}</Text>
+          </Box>
+        ))}
+      </Box>
+      {contextActions(ui, isWorking, contextAction, onContextAction)}
+    </Box>
+  );
+}
+
+/**
+ * Compact and Clear. Neither can run during a turn (compacting is refused,
+ * and a /clear would wait for the turn to end), so while Claude works the
+ * buttons give way to a note. Clear ends the conversation, so it asks first.
+ */
+function contextActions(
+  ui: Ui,
+  isWorking: boolean,
+  action: ChefStationContextAction | undefined,
+  onAction: TrayView["onContextAction"],
+) {
+  const { Box, Text, Button } = ui;
+  const message = action?.message ? <Text dimColor>{action.message}</Text> : null;
+
+  if (action?.isRunning) {
+    return (
+      <Box marginTop={1}>
+        <Text dimColor>Working on it…</Text>
+      </Box>
+    );
+  }
+
+  if (isWorking) {
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text dimColor>Clear and Compact are available once Claude finishes.</Text>
+        {message}
+      </Box>
+    );
+  }
+
+  if (action?.isConfirmingClear) {
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text>Clear the conversation? It ends here and a new one starts with an empty context.</Text>
+        <Box flexDirection="row" columnGap={1}>
+          <Button key="context-clear-confirm" label="Clear conversation" hotkey="y" variant="primary" onPress={() => onAction?.("confirm-clear")} />
+          <Button key="context-clear-cancel" label="Cancel" hotkey="n" onPress={() => onAction?.("cancel-clear")} />
+        </Box>
+      </Box>
+    );
+  }
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="row" columnGap={1}>
+        <Button key="context-compact" label="Compact" hotkey="c" onPress={() => onAction?.("compact")} />
+        <Button key="context-clear" label="Clear" hotkey="x" onPress={() => onAction?.("clear")} />
+      </Box>
+      {message}
     </Box>
   );
 }
