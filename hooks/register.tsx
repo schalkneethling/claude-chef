@@ -3,12 +3,14 @@ import type { EngineInterface, Register, SessionMeasureInput, SessionUsage, Time
 
 import type {
   ChefStationBackfill,
+  ChefStationCache,
   ChefStationContext,
   ChefStationContextAction,
   ChefStationLedger,
   ChefStationLive,
   ChefStationName,
 } from "../types";
+import { cacheTtlFromTranscript } from "./cache";
 import { describeBackfill, MAX_READ_BYTES, SCAN_TIMEOUT_MS, type Tallied, toBackfill } from "./backfill";
 import { modelName, short } from "./format";
 import { backfillSince, composeLedger, dayKey, emptyLedger, isStale, recordTurn } from "./ledger";
@@ -39,6 +41,7 @@ const ledger = atom({ plugin: "chef-station", key: "ledger" } as const, emptyLed
 const live = atom({ plugin: "chef-station", key: "live" } as const, null as ChefStationLive | null);
 const now = atom({ plugin: "chef-station", key: "now" } as const, 0);
 const recordedUsd = atom({ plugin: "chef-station", key: "recordedUsd" } as const, 0);
+const cache = atom({ plugin: "chef-station", key: "cache" } as const, {} as ChefStationCache);
 const contextBreakdown = atom({ plugin: "chef-station", key: "context" } as const, null as ChefStationContext | null);
 const contextAction = atom({ plugin: "chef-station", key: "contextAction" } as const, {
   isRunning: false,
@@ -106,7 +109,32 @@ export const register: Register = (on, options) => {
     return result;
   });
 
-  // A /clear raises no session.start: the conversation ends here, and its cost starts over from nothing.
+  // Every model request is a step. A request reads or writes the prompt cache and restarts its
+  // lifetime from the moment it starts, so the main conversation's steps start the countdown.
+  on("turn.step", async function* ($, e, next) {
+    if (!e.agentId) {
+      const at = await $.clock.now();
+      await update($, cache, (before) => ({ ...before, lastRequestAt: at }));
+    }
+
+    return yield* next(e);
+  });
+
+  // The settings hooks' Stop fires as the main conversation's turn ends and names its transcript,
+  // whose latest cache write says whether the cache lives for five minutes or an hour.
+  on("classic.Stop", async ($, e, next) => {
+    const result = await next(e);
+    const ttl = cacheTtlFromTranscript(await readTranscriptTail($, e.transcript_path));
+
+    if (ttl) {
+      await update($, cache, (before) => ({ ...before, ttl }));
+    }
+
+    return result;
+  });
+
+  // A /clear raises no session.start: the conversation ends here, its cost starts over from nothing,
+  // and the new conversation has no cache yet.
   on("session.end", async ($, e, next) => {
     const result = await next(e);
 
@@ -114,6 +142,7 @@ export const register: Register = (on, options) => {
       await update($, recordedUsd, () => 0);
       // The breakdown on screen is the previous conversation's; the next turn measures the new one.
       await update($, contextBreakdown, () => null);
+      await update($, cache, () => ({}));
     }
 
     return result;
@@ -259,6 +288,7 @@ export const register: Register = (on, options) => {
       now: currentNow || currentLive.startedAt,
       plan,
       backfillStatus: await read($, backfillStatus),
+      cache: await read($, cache),
       context: await read($, contextBreakdown),
       contextAction: await read($, contextAction),
       onContextAction: (action) => void runContextAction($, action),
@@ -384,6 +414,29 @@ async function listTranscripts($: EngineInterface, directory: string): Promise<{
   }
 
   return found;
+}
+
+/** How much of a transcript's end is enough to find the latest response that wrote the cache. */
+const TRANSCRIPT_TAIL_BYTES = 1024 * 1024;
+
+/**
+ * The end of a transcript: the whole file when the mod may read it (4 MiB at
+ * most), otherwise its last megabyte through `tail`. Empty when neither works,
+ * which leaves the lifetime as it was.
+ */
+async function readTranscriptTail($: EngineInterface, path: string): Promise<string> {
+  try {
+    const { size } = await $.fs.stat(path);
+
+    if (size <= MAX_READ_BYTES) {
+      return await $.fs.read(path);
+    }
+
+    const { exitCode, stdout } = await $.process.run(["tail", "-c", String(TRANSCRIPT_TAIL_BYTES), path]);
+    return exitCode === 0 ? stdout : "";
+  } catch {
+    return "";
+  }
 }
 
 /** Shows a station, remembers it for the next session, and measures the context when that station opens. */

@@ -1,6 +1,6 @@
 {
   "name": "chef-station",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A chef station tray above the prompt: plan limits, today's spend, the hourly trend, models and projects, and thirteen weeks of activity.",
   "author": { "name": "Schalk Neethling" },
   "types": "./types/index.d.ts",
