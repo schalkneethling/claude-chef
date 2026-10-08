@@ -1,10 +1,18 @@
 import { atom, read, update } from "claude-code";
 import type { EngineInterface, Register, SessionMeasureInput, SessionUsage, Timer } from "claude-code";
 
-import type { ChefStationBackfill, ChefStationCache, ChefStationLedger, ChefStationLive, ChefStationName } from "../types";
+import type {
+  ChefStationBackfill,
+  ChefStationCache,
+  ChefStationContext,
+  ChefStationContextAction,
+  ChefStationLedger,
+  ChefStationLive,
+  ChefStationName,
+} from "../types";
 import { cacheTtlFromTranscript } from "./cache";
 import { describeBackfill, MAX_READ_BYTES, SCAN_TIMEOUT_MS, type Tallied, toBackfill } from "./backfill";
-import { modelName } from "./format";
+import { modelName, short } from "./format";
 import { backfillSince, composeLedger, dayKey, emptyLedger, isStale, recordTurn } from "./ledger";
 import { STATIONS, tray } from "./stations";
 import { addTranscript, createTally } from "./transcript.mjs";
@@ -34,6 +42,11 @@ const live = atom({ plugin: "chef-station", key: "live" } as const, null as Chef
 const now = atom({ plugin: "chef-station", key: "now" } as const, 0);
 const recordedUsd = atom({ plugin: "chef-station", key: "recordedUsd" } as const, 0);
 const cache = atom({ plugin: "chef-station", key: "cache" } as const, {} as ChefStationCache);
+const contextBreakdown = atom({ plugin: "chef-station", key: "context" } as const, null as ChefStationContext | null);
+const contextAction = atom({ plugin: "chef-station", key: "contextAction" } as const, {
+  isRunning: false,
+  isConfirmingClear: false,
+} as ChefStationContextAction);
 const backfillStatus = atom({ plugin: "chef-station", key: "backfillStatus" } as const, { isRunning: false } as {
   isRunning: boolean;
   message?: string;
@@ -66,6 +79,7 @@ export const register: Register = (on, options) => {
     // Whatever the session cost before this load is already in the ledger, or predates the tray.
     await update($, recordedUsd, () => usage.cost?.usd ?? 0);
     await tick($);
+    await refreshContext($).catch(() => undefined);
 
     if (isStation(saved)) {
       await update($, station, () => saved);
@@ -74,7 +88,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: "chef",
       description: "Show a station of the chef tray, or rescan your Claude Code history with backfill.",
-      argumentHint: "[usage|trend|breakdown|activity|backfill]",
+      argumentHint: "[usage|trend|breakdown|activity|context|backfill]",
       immediate: true,
     });
 
@@ -119,11 +133,15 @@ export const register: Register = (on, options) => {
     return result;
   });
 
-  // A /clear raises no session.start: the conversation ends here, and the new one has no cache yet.
+  // A /clear raises no session.start: the conversation ends here, its cost starts over from nothing,
+  // and the new conversation has no cache yet.
   on("session.end", async ($, e, next) => {
     const result = await next(e);
 
     if (e.reason === "clear") {
+      await update($, recordedUsd, () => 0);
+      // The breakdown on screen is the previous conversation's; the next turn measures the new one.
+      await update($, contextBreakdown, () => null);
       await update($, cache, () => ({}));
     }
 
@@ -169,7 +187,8 @@ export const register: Register = (on, options) => {
       const usage = await $.session.usage();
       const totalUsd = usage.cost?.usd ?? 0;
       const alreadyRecorded = await read($, recordedUsd);
-      const usd = Math.max(0, totalUsd - alreadyRecorded);
+      // A total below what was recorded means the session's cost started over (a /clear): all of it is new.
+      const usd = totalUsd < alreadyRecorded ? totalUsd : totalUsd - alreadyRecorded;
       const current = await read($, live);
       const model = e.usage ? modelName(e.usage.model) : current?.model ?? "—";
 
@@ -211,6 +230,12 @@ export const register: Register = (on, options) => {
     });
 
     await recording.catch(() => undefined);
+
+    // The window changes with every turn of the main conversation; a subagent has its own.
+    if (!e.agentId) {
+      await refreshContext($).catch(() => undefined);
+    }
+
     return result;
   });
 
@@ -264,6 +289,9 @@ export const register: Register = (on, options) => {
       plan,
       backfillStatus: await read($, backfillStatus),
       cache: await read($, cache),
+      context: await read($, contextBreakdown),
+      contextAction: await read($, contextAction),
+      onContextAction: (action) => void runContextAction($, action),
       isWorking: e.props.isWorking,
       columns: e.props.bodyColumns,
       onSelect: (name) => void select($, name),
@@ -411,9 +439,86 @@ async function readTranscriptTail($: EngineInterface, path: string): Promise<str
   }
 }
 
+/** Shows a station, remembers it for the next session, and measures the context when that station opens. */
 async function select($: EngineInterface, name: ChefStationName) {
   await update($, station, () => name);
   await $.store.set(STATION_KEY, name);
+
+  if (name === "context") {
+    await refreshContext($).catch(() => undefined);
+  }
+}
+
+/** What the Context station's Compact and Clear buttons, and Clear's confirmation, do. */
+async function runContextAction($: EngineInterface, action: "compact" | "clear" | "confirm-clear" | "cancel-clear") {
+  if (action === "clear") {
+    await update($, contextAction, (before) => ({ ...before, isConfirmingClear: true, message: undefined }));
+    return;
+  }
+
+  if (action === "cancel-clear") {
+    await update($, contextAction, (before) => ({ ...before, isConfirmingClear: false }));
+    return;
+  }
+
+  // Two quick presses can both arrive before the redraw hides the buttons. Claiming the
+  // running flag in one read-and-write lets only the first of them start the action.
+  let isClaimed = false;
+  await update($, contextAction, (before) => {
+    isClaimed = !before.isRunning;
+    return isClaimed ? { isRunning: true, isConfirmingClear: false } : before;
+  });
+
+  if (!isClaimed) {
+    return;
+  }
+
+  let message: string | undefined;
+
+  try {
+    if (action === "compact") {
+      const result = await $.session.compact();
+
+      if (result.skip !== undefined) {
+        message = `Compacting was skipped: ${result.skip}`;
+      } else if (result.tokensBefore !== undefined && result.tokensAfter !== undefined) {
+        message = `Compacted from ${short(result.tokensBefore)} to ${short(result.tokensAfter)} tokens.`;
+      } else {
+        message = "Compacted.";
+      }
+    } else {
+      // There is no call for this on $; the button runs /clear as if it were typed.
+      await $.command.run({ command: "clear" });
+      message = "Cleared. A new conversation has started.";
+    }
+  } catch (error) {
+    message = `Could not ${action === "compact" ? "compact" : "clear"}: ${error instanceof Error ? error.message : String(error)}`;
+  }
+
+  await update($, contextAction, () => ({ isRunning: false, isConfirmingClear: false, message }));
+  await refreshContext($).catch(() => undefined);
+}
+
+/**
+ * Measures the context window by category, as /context does. The `summary`
+ * level estimates locally and sends no token-count requests, so it is cheap
+ * enough to run after every turn.
+ */
+async function refreshContext($: EngineInterface) {
+  const { context } = await $.session.usage({ breakdown: "summary" });
+  const breakdown = context.breakdown;
+
+  if (!breakdown) {
+    return;
+  }
+
+  const measured: ChefStationContext = {
+    categories: breakdown.categories.map(({ name, tokens, kind }) => ({ name, tokens, kind })),
+    totalTokens: breakdown.totalTokens,
+    maxTokens: breakdown.rawMaxTokens,
+  };
+
+  await update($, contextBreakdown, () => measured);
 }
 
 /** Moves the tray's clock on and picks up what other sessions have recorded. */
