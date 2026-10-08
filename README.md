@@ -8,7 +8,7 @@ https://github.com/user-attachments/assets/33ad4494-3bfb-48da-80f3-af303e1bfc2a
 
 ## Stations
 
-The tray has five stations. Press the button for a station, or focus the tray with `ctrl+x tab` and press its number. You can also type `/chef <station>`, or just `/chef` to cycle to the next one. The tray remembers the station you picked across sessions. `/chef backfill` rescans your Claude Code history.
+The tray has five stations. Press the button for a station, or focus the tray with `ctrl+x tab` and press its number. You can also type `/chef <station>`, or just `/chef` to cycle to the next one. The tray remembers the station you picked across sessions. `/chef backfill` rescans your Claude Code history. [Keyboard shortcuts](#keyboard-shortcuts) lists every key and command in one place.
 
 1. **Usage** shows your plan's rate-limit windows (the five-hour session and the week) with their reset countdowns, what today has cost in API value along with the token count and the share served from cache, and a "Now" row for the current session: the project, the model, the tokens written, the session cost, how full the context window is, how long the prompt cache stays warm, and a stopwatch for the running turn (once the turn ends, it shows how long the turn took).
 2. **Trend** draws today's spend hour by hour.
@@ -17,6 +17,29 @@ The tray has five stations. Press the button for a station, or focus the tray wi
 5. **Context** shows how the current context window is divided, as `/context` breaks it down: the system prompt, system tools, MCP tools, custom agents, memory files, skills and messages, then the free space and the auto-compact buffer. A legend below the bar names each category with its tokens and its share of the window. Tool schemas that load on demand sit outside the window, so they are left out. The breakdown is estimated locally, the same way `/context` estimates it, and refreshes after every turn. Below the legend, **Compact** (hotkey `c`) compacts the conversation the way `/compact` does and says how many tokens it saved. **Clear** (hotkey `x`) ends the conversation and starts a new one, as `/clear` does, after asking you to confirm with `y` or cancel with `n`. Neither can run during a turn, so while Claude is working the buttons give way to a short note.
 
 The Context station's colors come from a categorical palette checked with a data-visualization validator against both a light and a dark terminal background, because the tray cannot rely on knowing which one you use. Segments that touch are always colors validated as a pair, including for protanopia and deuteranopia. The colors are handed out in the bar's order to guarantee that, so a category's color can change when another category appears or disappears. A one-cell gap separates segments, free space and the buffer are drawn as textures rather than hues, and the legend names every color, so nothing is told apart by color alone.
+
+## Keyboard shortcuts
+
+The station and button keys work only while the tray has focus, so they never interfere with typing a prompt. Focus the tray with `ctrl+x tab` (or click it), and press `Esc` to return to the prompt.
+
+| Keys | Where | What it does |
+| :- | :- | :- |
+| `ctrl+x tab` | Anywhere | Focuses the tray. |
+| `Esc` | Tray focused | Returns to the prompt. |
+| `ctrl+x ctrl+a` | Anywhere | Collapses the tray, as its `[-]` mark does. |
+| `1` to `5` | Tray focused | Switches to Usage, Trend, Breakdown, Activity or Context. |
+| `c` | Context station | Compacts the conversation. |
+| `x` | Context station | Asks to clear the conversation. |
+| `y` | Clear confirmation | Clears the conversation and starts a new one. |
+| `n` | Clear confirmation | Cancels the clear. |
+
+The tray also answers to `/chef` at the prompt:
+
+| Command | What it does |
+| :- | :- |
+| `/chef` | Cycles to the next station. |
+| `/chef usage`, `/chef trend`, `/chef breakdown`, `/chef activity`, `/chef context` | Switches to that station. |
+| `/chef backfill` | Rescans your Claude Code history. |
 
 ## The prompt cache countdown
 
