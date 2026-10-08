@@ -54,14 +54,16 @@ Answer `y` to add the marketplace, then pick a scope. The user scope makes the t
 
 ## Update
 
-Claude Code keeps the copy of the plugin it made when you installed it, so new versions do not arrive on their own. To update, fetch the latest marketplace listing and then update the plugin:
+Claude Code keeps the copy of the plugin it made when you installed it. Auto-update is off by default for marketplaces outside Anthropic's own, including this one, so new versions do not arrive on their own until you turn it on. To turn it on, run `/plugin`, open the **Marketplaces** tab, select `chef-station` and choose **Enable auto-update**. Claude Code then refreshes the marketplace in the background shortly after a session starts and updates the plugin on disk.
+
+To update right away instead, fetch the latest marketplace listing and then update the plugin:
 
 ```sh
 claude plugin marketplace update chef-station
 claude plugin update chef-station
 ```
 
-Restart Claude Code to load the new version, or run `/reload-plugins` in a session that is already open. If you load the mod from a clone with `--plugin-dir`, a `git pull` is enough, because Claude Code reads that folder directly.
+Either way, a session that is already running keeps the version it loaded. Run `/reload-plugins` to load the new version there, or start a new session. If you load the mod from a clone with `--plugin-dir`, a `git pull` is enough, because Claude Code reads that folder directly.
 
 An update installs the version named in `.claude-plugin/plugin.json`, so every change meant to reach people who installed the plugin raises that version.
 
