@@ -11,6 +11,48 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 100 },
 } as const;
 
+/** The context window as /context breaks it down, with the given system prompt and messages. */
+function breakdownOf(systemPrompt: number, messages: number) {
+  const used = systemPrompt + 12_000 + messages;
+
+  return {
+    categories: [
+      { name: "System prompt", tokens: systemPrompt, kind: "used", color: "promptBorder", isDeferred: false },
+      { name: "System tools", tokens: 12_000, kind: "used", color: "inactive", isDeferred: false },
+      { name: "MCP tools", tokens: 40_000, kind: "deferred", color: "inactive", isDeferred: true },
+      { name: "Messages", tokens: messages, kind: "used", color: "permission", isDeferred: false },
+      { name: "Free space", tokens: 200_000 - used - 33_000, kind: "free", color: "inactive", isDeferred: false },
+      { name: "Autocompact buffer", tokens: 33_000, kind: "buffer", color: "inactive", isDeferred: false },
+    ],
+    totalTokens: used,
+    maxTokens: 200_000,
+    rawMaxTokens: 200_000,
+    percentage: Math.round((used / 200_000) * 100),
+  };
+}
+
+/** The colors of the context bar's segments, left to right: the Texts drawn with block or shade glyphs in the first row that has several. */
+async function barColors(ui: { drawn: () => Promise<unknown> }): Promise<string[]> {
+  const rows: string[][] = [];
+  const walk = (node: any) => {
+    if (!node || typeof node !== "object") {
+      return;
+    }
+
+    const children: any[] = node.children ?? [];
+    const segments = children.filter((child) => child?.type === "Text" && /^ ?[█░▒]+$/.test((child.children ?? []).join("")));
+
+    if (node.type === "Box" && segments.length > 1) {
+      rows.push(segments.map((child) => child.props?.color));
+    }
+
+    children.forEach(walk);
+  };
+
+  walk(await ui.drawn());
+  return rows[0] ?? [];
+}
+
 /** What the Node helper prints when it finds nothing. */
 const EMPTY_SCAN = { days: {}, unpricedModels: [], files: 0, skippedFiles: 0, responses: 0 };
 
@@ -19,6 +61,7 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
   const figures = {
     usd: 0,
     model: "claude-opus-5-5[1m]",
+    breakdown: breakdownOf(3_000, 9_000) as unknown,
     scan: EMPTY_SCAN as unknown,
     scanCalls: [] as { argv: readonly string[]; stdin?: string }[],
     /** Whether the Node helper is missing, so the mod reads the transcripts itself. */
@@ -46,10 +89,15 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
     return { value: { exitCode: 0, stdout: JSON.stringify(figures.scan), stderr: "", isStdoutTruncated: false, isStderrTruncated: false } };
   });
   on("command.register", ($, e) => ({ value: { command: e.name } }));
-  on("session.usage", () => ({
+  on("session.usage", ($, e) => ({
     value: {
       startedAt: START,
-      context: { tokens: 36_000, window: 200_000, percent: 18 },
+      context: {
+        tokens: 36_000,
+        window: 200_000,
+        percent: 18,
+        ...(e?.breakdown ? { breakdown: figures.breakdown as any } : {}),
+      },
       rateLimits: figures.rateLimits,
       cost: { usd: figures.usd },
     },
@@ -168,7 +216,7 @@ describe("chef-station", () => {
     await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
 
     expect(await $.command.run({ command: "chef", args: "activity" } as any)).toMatchObject({ text: "Chef tray: activity" });
-    expect(await $.command.run({ command: "chef", args: "" } as any)).toMatchObject({ text: "Chef tray: usage" });
+    expect(await $.command.run({ command: "chef", args: "" } as any)).toMatchObject({ text: "Chef tray: context" });
     expect(await $.command.run({ command: "chef", args: "pantry" } as any)).toMatchObject({ text: expect.stringContaining("No station") });
   });
 
@@ -321,6 +369,33 @@ describe("chef-station", () => {
     figures.model = "claude-sonnet-5-5";
     await $.turn.start({ text: "cook", turnId: "t2" } as any);
     expect(await ui.find({ type: "Text", text: /^ · Sonnet 5\.5 · / })).toBeDefined();
+    await ui.unmount();
+  });
+
+  test("the context station breaks the window down by category, and follows each turn", async ($, on) => {
+    const { figures } = kitchen(on);
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    expect(await $.command.run({ command: "chef", args: "context" } as any)).toMatchObject({ text: "Chef tray: context" });
+
+    for (const surface of ["terminal", "desktop"] as const) {
+      const ui = await $.ui.mount({ ...BAND, surface } as any);
+
+      expect(await ui.find({ type: "Text", text: "24k of 200k tokens (12%)" })).toBeDefined();
+      expect(await ui.find({ type: "Text", text: "System prompt" })).toBeDefined();
+      expect(await ui.find({ type: "Text", text: "Messages" })).toBeDefined();
+      expect(await ui.find({ type: "Text", text: "Autocompact buffer" })).toBeDefined();
+      // Schemas loaded on demand sit outside the window.
+      expect(await ui.find({ type: "Text", text: "MCP tools" })).toBeUndefined();
+      // The bar hands out colors in its own order, then draws free space and the buffer as textures.
+      expect(await barColors(ui)).toEqual(["#3987e5", "#d95926", "#199e70", "subtle", "subtle"]);
+      await ui.unmount();
+    }
+
+    figures.breakdown = breakdownOf(3_000, 45_000);
+    await $.turn.complete(opusTurn as any);
+
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+    expect(await ui.find({ type: "Text", text: "60k of 200k tokens (30%)" })).toBeDefined();
     await ui.unmount();
   });
 });

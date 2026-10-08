@@ -1,7 +1,7 @@
 import { atom, read, update } from "claude-code";
 import type { EngineInterface, Register, SessionMeasureInput, SessionUsage, Timer } from "claude-code";
 
-import type { ChefStationBackfill, ChefStationLedger, ChefStationLive, ChefStationName } from "../types";
+import type { ChefStationBackfill, ChefStationContext, ChefStationLedger, ChefStationLive, ChefStationName } from "../types";
 import { describeBackfill, MAX_READ_BYTES, SCAN_TIMEOUT_MS, type Tallied, toBackfill } from "./backfill";
 import { modelName } from "./format";
 import { backfillSince, composeLedger, dayKey, emptyLedger, isStale, recordTurn } from "./ledger";
@@ -32,6 +32,7 @@ const ledger = atom({ plugin: "chef-station", key: "ledger" } as const, emptyLed
 const live = atom({ plugin: "chef-station", key: "live" } as const, null as ChefStationLive | null);
 const now = atom({ plugin: "chef-station", key: "now" } as const, 0);
 const recordedUsd = atom({ plugin: "chef-station", key: "recordedUsd" } as const, 0);
+const contextBreakdown = atom({ plugin: "chef-station", key: "context" } as const, null as ChefStationContext | null);
 const backfillStatus = atom({ plugin: "chef-station", key: "backfillStatus" } as const, { isRunning: false } as {
   isRunning: boolean;
   message?: string;
@@ -64,6 +65,7 @@ export const register: Register = (on, options) => {
     // Whatever the session cost before this load is already in the ledger, or predates the tray.
     await update($, recordedUsd, () => usage.cost?.usd ?? 0);
     await tick($);
+    await refreshContext($).catch(() => undefined);
 
     if (isStation(saved)) {
       await update($, station, () => saved);
@@ -72,7 +74,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: "chef",
       description: "Show a station of the chef tray, or rescan your Claude Code history with backfill.",
-      argumentHint: "[usage|trend|breakdown|activity|backfill]",
+      argumentHint: "[usage|trend|breakdown|activity|context|backfill]",
       immediate: true,
     });
 
@@ -174,6 +176,12 @@ export const register: Register = (on, options) => {
     });
 
     await recording.catch(() => undefined);
+
+    // The window changes with every turn of the main conversation; a subagent has its own.
+    if (!e.agentId) {
+      await refreshContext($).catch(() => undefined);
+    }
+
     return result;
   });
 
@@ -226,6 +234,7 @@ export const register: Register = (on, options) => {
       now: currentNow || currentLive.startedAt,
       plan,
       backfillStatus: await read($, backfillStatus),
+      context: await read($, contextBreakdown),
       isWorking: e.props.isWorking,
       columns: e.props.bodyColumns,
       onSelect: (name) => void select($, name),
@@ -353,6 +362,32 @@ async function listTranscripts($: EngineInterface, directory: string): Promise<{
 async function select($: EngineInterface, name: ChefStationName) {
   await update($, station, () => name);
   await $.store.set(STATION_KEY, name);
+
+  if (name === "context") {
+    await refreshContext($).catch(() => undefined);
+  }
+}
+
+/**
+ * Measures the context window by category, as /context does. The `summary`
+ * level estimates locally and sends no token-count requests, so it is cheap
+ * enough to run after every turn.
+ */
+async function refreshContext($: EngineInterface) {
+  const { context } = await $.session.usage({ breakdown: "summary" });
+  const breakdown = context.breakdown;
+
+  if (!breakdown) {
+    return;
+  }
+
+  const measured: ChefStationContext = {
+    categories: breakdown.categories.map(({ name, tokens, kind }) => ({ name, tokens, kind })),
+    totalTokens: breakdown.totalTokens,
+    maxTokens: breakdown.rawMaxTokens,
+  };
+
+  await update($, contextBreakdown, () => measured);
 }
 
 /** Moves the tray's clock on and picks up what other sessions have recorded. */
