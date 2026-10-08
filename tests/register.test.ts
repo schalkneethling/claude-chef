@@ -469,4 +469,32 @@ describe("chef-station", () => {
     expect(await ui.find({ type: "Text", text: /^\$5\.50$/ })).toBeDefined();
     await ui.unmount();
   });
+
+  test("pressing Compact twice in quick succession compacts once", async ($, on) => {
+    const { figures } = kitchen(on);
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    await $.command.run({ command: "chef", args: "context" } as any);
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+
+    await Promise.all([ui.press({ key: "context-compact" }), ui.press({ key: "context-compact" })]);
+
+    expect(figures.compactions).toBe(1);
+    await ui.unmount();
+  });
+
+  test("after /clear, the first turn's cost counts in full even when it exceeds the old total", async ($, on) => {
+    const { figures } = kitchen(on);
+    on("session.end", ($, e) => ({ sessionId: e.sessionId }));
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+
+    figures.usd = 0.3;
+    await $.turn.complete(opusTurn as any);
+    await $.session.end({ reason: "clear", sessionId: "this-session", resume: {} } as any);
+    figures.usd = 0.5;
+    await $.turn.complete(opusTurn as any);
+
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+    expect(await ui.find({ type: "Text", text: /^\$0\.80$/ })).toBeDefined();
+    await ui.unmount();
+  });
 });

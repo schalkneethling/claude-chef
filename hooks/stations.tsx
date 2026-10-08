@@ -81,6 +81,7 @@ function header({ ui, station, plan, onSelect }: TrayView) {
   );
 }
 
+/** The body of the station the tray shows. */
 function station(view: TrayView) {
   switch (view.station) {
     case "trend":
@@ -335,6 +336,10 @@ function activityGrid({ ui, ledger, now, columns, backfillStatus }: TrayView) {
 /** Each legend entry's width, so entries line up in columns as they wrap. */
 const LEGEND_ENTRY_WIDTH = 36;
 
+/**
+ * The Context station: the window as one bar of categories, a legend that
+ * names each color with its tokens and share, and the Compact and Clear buttons.
+ */
 function contextWindow({ ui, context, columns, isWorking, contextAction, onContextAction }: TrayView) {
   const { Box, Text } = ui;
 

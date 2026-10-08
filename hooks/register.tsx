@@ -106,6 +106,17 @@ export const register: Register = (on, options) => {
     return result;
   });
 
+  // A /clear raises no session.start: the conversation ends here, and its cost starts over from nothing.
+  on("session.end", async ($, e, next) => {
+    const result = await next(e);
+
+    if (e.reason === "clear") {
+      await update($, recordedUsd, () => 0);
+    }
+
+    return result;
+  });
+
   // Raised for the main conversation's turns only; subagents' runs raise none.
   on("turn.start", async ($, e, next) => {
     const at = await $.clock.now();
@@ -373,6 +384,7 @@ async function listTranscripts($: EngineInterface, directory: string): Promise<{
   return found;
 }
 
+/** Shows a station, remembers it for the next session, and measures the context when that station opens. */
 async function select($: EngineInterface, name: ChefStationName) {
   await update($, station, () => name);
   await $.store.set(STATION_KEY, name);
@@ -394,7 +406,18 @@ async function runContextAction($: EngineInterface, action: "compact" | "clear" 
     return;
   }
 
-  await update($, contextAction, () => ({ isRunning: true, isConfirmingClear: false }));
+  // Two quick presses can both arrive before the redraw hides the buttons. Claiming the
+  // running flag in one read-and-write lets only the first of them start the action.
+  let isClaimed = false;
+  await update($, contextAction, (before) => {
+    isClaimed = !before.isRunning;
+    return isClaimed ? { isRunning: true, isConfirmingClear: false } : before;
+  });
+
+  if (!isClaimed) {
+    return;
+  }
+
   let message: string | undefined;
 
   try {
