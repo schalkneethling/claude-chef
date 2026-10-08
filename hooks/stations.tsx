@@ -1,6 +1,7 @@
 import type { Elements, RenderChildren } from "claude-code";
 
-import type { ChefStationLedger, ChefStationLive, ChefStationName } from "../types";
+import type { ChefStationCache, ChefStationLedger, ChefStationLive, ChefStationName } from "../types";
+import { cacheLabel, cacheStatus } from "./cache";
 import { bar, countdown, elapsed, money, short, verticalBars } from "./format";
 import { activity, hourly, ranked, today } from "./ledger";
 
@@ -16,6 +17,8 @@ export type TrayView = {
   plan?: string;
   /** Whether a scan of the transcripts is running, and what the last one said. */
   backfillStatus?: { isRunning: boolean; message?: string };
+  /** The main conversation's prompt cache: when it was last used, and how long its entries live. */
+  cache?: ChefStationCache;
   isWorking: boolean;
   columns: number;
   onSelect: (station: ChefStationName) => void;
@@ -102,7 +105,7 @@ function row(ui: Ui, label: string, ...children: RenderChildren[]) {
   );
 }
 
-function usage({ ui, ledger, live, now, isWorking, columns }: TrayView) {
+function usage({ ui, ledger, live, now, isWorking, columns, cache }: TrayView) {
   const { Box, Text } = ui;
   const day = today(ledger, now);
   const cachePercent = day.inputTokens > 0 ? Math.round((day.cacheReadTokens / day.inputTokens) * 100) : 0;
@@ -138,6 +141,8 @@ function usage({ ui, ledger, live, now, isWorking, columns }: TrayView) {
       <Text dimColor>{`  last turn ${elapsed(live.lastTurnMs)}`}</Text>
     ) : null;
 
+  const cacheText = cacheLabel(cacheStatus(cache ?? {}, now));
+
   const nowRow = live
     ? row(
         ui,
@@ -154,6 +159,7 @@ function usage({ ui, ledger, live, now, isWorking, columns }: TrayView) {
             live.contextPercent === undefined ? "" : ` · context ${Math.round(live.contextPercent)}%`,
           ].join("")}
         </Text>,
+        cacheText ? <Text dimColor>{` · ${cacheText}`}</Text> : null,
         turnTime,
       )
     : null;

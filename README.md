@@ -10,10 +10,14 @@ https://github.com/user-attachments/assets/33ad4494-3bfb-48da-80f3-af303e1bfc2a
 
 The tray has four stations. Press the button for a station, or focus the tray with `ctrl+x tab` and press its number. You can also type `/chef <station>`, or just `/chef` to cycle to the next one. The tray remembers the station you picked across sessions. `/chef backfill` rescans your Claude Code history.
 
-1. **Usage** shows your plan's rate-limit windows (the five-hour session and the week) with their reset countdowns, what today has cost in API value along with the token count and the share served from cache, and a "Now" row for the current session: the project, the model, the tokens written, the session cost, how full the context window is, and a stopwatch for the running turn (once the turn ends, it shows how long the turn took).
+1. **Usage** shows your plan's rate-limit windows (the five-hour session and the week) with their reset countdowns, what today has cost in API value along with the token count and the share served from cache, and a "Now" row for the current session: the project, the model, the tokens written, the session cost, how full the context window is, how long the prompt cache stays warm, and a stopwatch for the running turn (once the turn ends, it shows how long the turn took).
 2. **Trend** draws today's spend hour by hour.
 3. **Breakdown** ranks today's spend by model and by project.
 4. **Activity** draws a thirteen-week heat map of tokens per day, with the total, the number of active days, the busiest day and your current streak.
+
+## The prompt cache countdown
+
+The "Now" row shows "cache warm · ~42m left" while the main conversation's prompt cache is likely still warm, and "cache expired" once it has likely lapsed. A warm cache means your next prompt is mostly a cheap cache read; an expired one means it pays to write the cache again. The countdown is the tray's own estimate, which the tilde marks: Claude Code does not report it. A cache entry lives for a fixed time from the start of the last request that read or wrote it, so the tray restarts the countdown as each request of the main conversation starts (a subagent's requests use a cache of their own). How long an entry lives, five minutes or an hour, depends on how it was written, which only the session's transcript records. The tray reads the end of the transcript as each turn ends, and until then it assumes the shorter five minutes, so it never calls a cold cache warm. A `/clear` starts the countdown over.
 
 ## Where the numbers come from
 

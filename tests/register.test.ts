@@ -18,6 +18,8 @@ const EMPTY_SCAN = { days: {}, unpricedModels: [], files: 0, skippedFiles: 0, re
 function kitchen(on: On, store: Record<string, unknown> = {}) {
   const figures = {
     usd: 0,
+    /** Transcript files by path, for the cache lifetime the tray reads after each turn. */
+    transcripts: {} as Record<string, string>,
     model: "claude-opus-5-5[1m]",
     scan: EMPTY_SCAN as unknown,
     scanCalls: [] as { argv: readonly string[]; stdin?: string }[],
@@ -55,6 +57,20 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
     },
   }));
   on("turn.complete", () => ({ text: "" }));
+  on("turn.step", async function* ($, e) {
+    return { turnId: e.turnId, index: e.index, answer: "", toolUses: [] } as any;
+  });
+  on("classic.Stop", () => ({}) as any);
+  on("fs.stat", ($, e: any) => ({ value: { kind: "file", size: (figures.transcripts[e.path] ?? "").length, mtimeMs: 0, isLink: false } }) as any);
+  on("fs.read", ($, e: any) => {
+    const text = figures.transcripts[e.path];
+
+    if (text === undefined) {
+      throw new Error("ENOENT");
+    }
+
+    return { value: text } as any;
+  });
 
   return { figures, clock };
 }
@@ -295,13 +311,8 @@ describe("chef-station", () => {
             ]
           : [],
     }) as any);
-    on("fs.read", ($, e: any) => {
-      if (e.path.endsWith("locked.jsonl")) {
-        throw new Error("EACCES");
-      }
-
-      return { value: response } as any;
-    });
+    // locked.jsonl has no entry here, so reading it fails.
+    figures.transcripts[`${projects}/good.jsonl`] = response;
 
     await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
     const { text } = await $.command.run({ command: "chef", args: "backfill" } as any);
@@ -323,4 +334,63 @@ describe("chef-station", () => {
     expect(await ui.find({ type: "Text", text: /^ · Sonnet 5\.5 · / })).toBeDefined();
     await ui.unmount();
   });
+
+  test("the Now row counts the prompt cache down from the main conversation's last request", async ($, on) => {
+    const { figures, clock } = kitchen(on);
+    const transcript = "/home/chef/.claude/projects/-work/this-session.jsonl";
+    figures.transcripts[transcript] = JSON.stringify({
+      type: "assistant",
+      isSidechain: false,
+      message: {
+        usage: {
+          input_tokens: 2,
+          output_tokens: 10,
+          cache_read_input_tokens: 40_000,
+          cache_creation_input_tokens: 900,
+          cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 900 },
+        },
+      },
+    });
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+
+    // Before any request there is no cache to speak of.
+    expect(await ui.find({ type: "Text", text: /^cache (warm|expired)/ })).toBeUndefined();
+
+    // Until a turn ends and the transcript says otherwise, the shorter five minutes is assumed.
+    await drain($.turn.step({ turnId: "t1", index: 0, model: "claude-opus-5-5", messageCount: 1 } as any));
+    await clock.advance(60_000);
+    expect(await ui.find({ type: "Text", text: "cache warm · ~4m left" })).toBeDefined();
+
+    await $.classic.Stop({ transcript_path: transcript, stop_hook_active: false } as any);
+    await clock.advance(17 * 60_000);
+    expect(await ui.find({ type: "Text", text: "cache warm · ~42m left" })).toBeDefined();
+
+    // A subagent's request uses its own cache, so the main conversation's countdown keeps running.
+    await drain($.turn.step({ turnId: "t2", index: 0, model: "claude-haiku-4-5", messageCount: 1, agentId: "sub" } as any));
+    await clock.advance(43 * 60_000);
+    expect(await ui.find({ type: "Text", text: "cache expired" })).toBeDefined();
+    await ui.unmount();
+  });
+
+  test("a /clear starts the cache over, with nothing to count down", async ($, on) => {
+    const { clock } = kitchen(on);
+    on("session.end", ($, e) => ({ sessionId: e.sessionId }));
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+
+    await drain($.turn.step({ turnId: "t1", index: 0, model: "claude-opus-5-5", messageCount: 1 } as any));
+    await $.session.end({ reason: "clear", sessionId: "this-session", resume: {} } as any);
+    await clock.advance(60_000);
+
+    expect(await ui.find({ type: "Text", text: /^cache (warm|expired)/ })).toBeUndefined();
+    await ui.unmount();
+  });
 });
+
+/** Reads a streaming event to its end, as the engine does with a model request. */
+async function drain(stream: AsyncIterable<unknown>) {
+  for await (const _ of stream) {
+    // Nothing to read: the steps here stream no chunks.
+  }
+}

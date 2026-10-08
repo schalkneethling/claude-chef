@@ -85,6 +85,17 @@ export type ChefStationRateLimit = {
   resetsAt?: string;
 };
 
+/** How long a prompt-cache entry lives after the request that last read or wrote it. */
+export type ChefStationCacheTtl = "5m" | "1h";
+
+/** What the tray knows about the main conversation's prompt cache. */
+export type ChefStationCache = {
+  /** When the main conversation's last model request started, in milliseconds since the epoch. */
+  lastRequestAt?: number;
+  /** The lifetime of the latest cache write, as the transcript records it; unknown until a turn ends. */
+  ttl?: ChefStationCacheTtl;
+};
+
 declare module "claude-code" {
   interface PluginState {
     "chef-station": {
@@ -98,6 +109,8 @@ declare module "claude-code" {
       now: number;
       /** The session cost already written to the ledger, so no turn counts twice. */
       recordedUsd: number;
+      /** The main conversation's prompt cache: when it was last used, and how long its entries live. */
+      cache: ChefStationCache;
       /** Whether a scan of the transcripts is running, and what the last one said. */
       backfillStatus: { isRunning: boolean; message?: string };
     };

@@ -1,7 +1,8 @@
 import { atom, read, update } from "claude-code";
 import type { EngineInterface, Register, SessionMeasureInput, SessionUsage, Timer } from "claude-code";
 
-import type { ChefStationBackfill, ChefStationLedger, ChefStationLive, ChefStationName } from "../types";
+import type { ChefStationBackfill, ChefStationCache, ChefStationLedger, ChefStationLive, ChefStationName } from "../types";
+import { cacheTtlFromTranscript } from "./cache";
 import { describeBackfill, MAX_READ_BYTES, SCAN_TIMEOUT_MS, type Tallied, toBackfill } from "./backfill";
 import { modelName } from "./format";
 import { backfillSince, composeLedger, dayKey, emptyLedger, isStale, recordTurn } from "./ledger";
@@ -32,6 +33,7 @@ const ledger = atom({ plugin: "chef-station", key: "ledger" } as const, emptyLed
 const live = atom({ plugin: "chef-station", key: "live" } as const, null as ChefStationLive | null);
 const now = atom({ plugin: "chef-station", key: "now" } as const, 0);
 const recordedUsd = atom({ plugin: "chef-station", key: "recordedUsd" } as const, 0);
+const cache = atom({ plugin: "chef-station", key: "cache" } as const, {} as ChefStationCache);
 const backfillStatus = atom({ plugin: "chef-station", key: "backfillStatus" } as const, { isRunning: false } as {
   isRunning: boolean;
   message?: string;
@@ -88,6 +90,41 @@ export const register: Register = (on, options) => {
       $.clock.after(SCAN_DELAY_MS, () => {
         runBackfill($).catch(() => undefined);
       });
+    }
+
+    return result;
+  });
+
+  // Every model request is a step. A request reads or writes the prompt cache and restarts its
+  // lifetime from the moment it starts, so the main conversation's steps start the countdown.
+  on("turn.step", async function* ($, e, next) {
+    if (!e.agentId) {
+      const at = await $.clock.now();
+      await update($, cache, (before) => ({ ...before, lastRequestAt: at }));
+    }
+
+    return yield* next(e);
+  });
+
+  // The settings hooks' Stop fires as the main conversation's turn ends and names its transcript,
+  // whose latest cache write says whether the cache lives for five minutes or an hour.
+  on("classic.Stop", async ($, e, next) => {
+    const result = await next(e);
+    const ttl = cacheTtlFromTranscript(await readTranscriptTail($, e.transcript_path));
+
+    if (ttl) {
+      await update($, cache, (before) => ({ ...before, ttl }));
+    }
+
+    return result;
+  });
+
+  // A /clear raises no session.start: the conversation ends here, and the new one has no cache yet.
+  on("session.end", async ($, e, next) => {
+    const result = await next(e);
+
+    if (e.reason === "clear") {
+      await update($, cache, () => ({}));
     }
 
     return result;
@@ -226,6 +263,7 @@ export const register: Register = (on, options) => {
       now: currentNow || currentLive.startedAt,
       plan,
       backfillStatus: await read($, backfillStatus),
+      cache: await read($, cache),
       isWorking: e.props.isWorking,
       columns: e.props.bodyColumns,
       onSelect: (name) => void select($, name),
@@ -348,6 +386,29 @@ async function listTranscripts($: EngineInterface, directory: string): Promise<{
   }
 
   return found;
+}
+
+/** How much of a transcript's end is enough to find the latest response that wrote the cache. */
+const TRANSCRIPT_TAIL_BYTES = 1024 * 1024;
+
+/**
+ * The end of a transcript: the whole file when the mod may read it (4 MiB at
+ * most), otherwise its last megabyte through `tail`. Empty when neither works,
+ * which leaves the lifetime as it was.
+ */
+async function readTranscriptTail($: EngineInterface, path: string): Promise<string> {
+  try {
+    const { size } = await $.fs.stat(path);
+
+    if (size <= MAX_READ_BYTES) {
+      return await $.fs.read(path);
+    }
+
+    const { exitCode, stdout } = await $.process.run(["tail", "-c", String(TRANSCRIPT_TAIL_BYTES), path]);
+    return exitCode === 0 ? stdout : "";
+  } catch {
+    return "";
+  }
 }
 
 async function select($: EngineInterface, name: ChefStationName) {
