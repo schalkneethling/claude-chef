@@ -112,6 +112,8 @@ export const register: Register = (on, options) => {
 
     if (e.reason === "clear") {
       await update($, recordedUsd, () => 0);
+      // The breakdown on screen is the previous conversation's; the next turn measures the new one.
+      await update($, contextBreakdown, () => null);
     }
 
     return result;

@@ -497,4 +497,19 @@ describe("chef-station", () => {
     expect(await ui.find({ type: "Text", text: /^\$0\.80$/ })).toBeDefined();
     await ui.unmount();
   });
+
+  test("after a typed /clear, the Context station stops showing the previous conversation", async ($, on) => {
+    kitchen(on);
+    on("session.end", ($, e) => ({ sessionId: e.sessionId }));
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    await $.command.run({ command: "chef", args: "context" } as any);
+    const ui = await $.ui.mount({ ...BAND, surface: "terminal" } as any);
+    expect(await ui.find({ type: "Text", text: "24k of 200k tokens (12%)" })).toBeDefined();
+
+    await $.session.end({ reason: "clear", sessionId: "this-session", resume: {} } as any);
+
+    expect(await ui.find({ type: "Text", text: "24k of 200k tokens (12%)" })).toBeUndefined();
+    expect(await ui.find({ type: "Text", text: "Measuring the context window…" })).toBeDefined();
+    await ui.unmount();
+  });
 });
