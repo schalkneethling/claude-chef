@@ -71,6 +71,7 @@ const backfillStatus = atom({ plugin: "chef-station", key: "backfillStatus" } as
   message?: string;
 });
 const agents = atom({ plugin: "chef-station", key: "agents" } as const, { agents: [], refreshedAt: 0 } as ChefStationAgents);
+const isSidebarClosed = atom({ plugin: "chef-station", key: "isSidebarClosed" } as const, false);
 
 /**
  * What one loaded copy of the module keeps between refreshes of the Agents
@@ -116,10 +117,6 @@ export const register: Register = (on, options) => {
       await update($, station, () => saved);
     }
 
-    if (saved === "agents") {
-      await refreshAgents($, agentsRefresher);
-    }
-
     await $.command.register({
       name: "chef",
       description: "Show a station of the Chef Station sidebar, or rescan your Claude Code history with backfill.",
@@ -135,9 +132,22 @@ export const register: Register = (on, options) => {
       refreshAgentsWhileShown($, agentsRefresher).catch(() => undefined);
     });
 
-    // The stations are always at hand, as the tray above the prompt kept them. A session with
-    // nowhere to draw (a headless run) refuses the pane, which changes nothing here.
-    $.ui.open({ id: PANE_ID, title: PANE_TITLE }).catch(() => undefined);
+    // The stations are always at hand, as the tray above the prompt kept them, unless the
+    // person closed the sidebar earlier in this session (this start can be a reload's).
+    // A session with nowhere to draw (a headless run) refuses the pane, which changes nothing.
+    if (!(await read($, isSidebarClosed))) {
+      const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE }).catch(() => undefined);
+
+      // A terminal places a pane nobody asked for only from 144 columns, so say how to open it.
+      if (opened && !opened.isPlaced) {
+        $.ui.toast("Chef Station waits for a wider terminal. Type /chef to open it now.");
+      }
+    }
+
+    // After the command and the pane, so a slow `ps` never holds the session's start.
+    if (saved === "agents") {
+      refreshAgents($, agentsRefresher).catch(() => undefined);
+    }
 
     // Fill in the history from Claude Code's transcripts once a day, in the background.
     const stored = await read($, ledger);
@@ -282,6 +292,18 @@ export const register: Register = (on, options) => {
     return result;
   });
 
+  // The person closing the sidebar keeps it closed through reloads, until /chef. Remembering
+  // that must never keep a pane open, so the close goes ahead even if this hook fails.
+  on("ui.close", async ($, e, next) => {
+    const result = await next(e);
+
+    if (e.id === PANE_ID && e.origin.kind === "person") {
+      await update($, isSidebarClosed, () => true);
+    }
+
+    return result;
+  }).catch(($, e, next) => next(e));
+
   on("command.run", { command: "chef" }, async ($, e) => {
     const asked = e.args.trim().toLowerCase();
 
@@ -295,12 +317,15 @@ export const register: Register = (on, options) => {
       };
     }
 
-    // A bare /chef reopens a closed sidebar on the station it showed, and cycles once it is open.
-    const wasOpen = await isSidebarOpen($);
-    // Opened from the person's command, so the pane is placed at any width.
-    await $.ui.open({ id: PANE_ID, title: PANE_TITLE });
+    // A bare /chef brings back a sidebar that is closed or out of sight on the station it
+    // showed, and cycles once the sidebar is in view.
+    const wasShown = await isSidebarShown($);
+    await update($, isSidebarClosed, () => false);
+    // Opened from the person's command, so the pane is placed at any width. Another plugin
+    // may refuse it; the station still changes, for when the sidebar next opens.
+    await $.ui.open({ id: PANE_ID, title: PANE_TITLE }).catch(() => undefined);
 
-    if (asked === "" && !wasOpen) {
+    if (asked === "" && !wasShown) {
       return { text: `Chef Station: ${await read($, station)}` };
     }
 
@@ -337,7 +362,9 @@ export const register: Register = (on, options) => {
       // The pane is told nothing about turns, so the running turn's start says Claude is working.
       isWorking: currentLive.turnStartedAt !== undefined,
       columns: e.props.bodyColumns,
-      onSelect: (name) => void select($, name, agentsRefresher),
+      onSelect: (name) => {
+        select($, name, agentsRefresher).catch(() => undefined);
+      },
     });
   });
 };
@@ -509,14 +536,15 @@ function nextStation(current: ChefStationName): ChefStationName {
   return STATIONS[(index + 1) % STATIONS.length]!.name;
 }
 
-async function isSidebarOpen($: EngineInterface): Promise<boolean> {
+/** Whether the person can see the sidebar: open, placed (not waiting for a wider terminal) and not behind another tab. */
+async function isSidebarShown($: EngineInterface): Promise<boolean> {
   const panes = await $.ui.panes();
-  return panes.some((pane) => pane.id === PANE_ID);
+  return panes.some((pane) => pane.id === PANE_ID && pane.isPlaced && pane.isShown);
 }
 
-/** The timer's refresh: only while the Agents station shows in an open sidebar, so it costs nothing otherwise. */
+/** The timer's refresh: only while the Agents station is in view, so it costs nothing otherwise. */
 async function refreshAgentsWhileShown($: EngineInterface, refresher: AgentsRefresher) {
-  if ((await read($, station)) === "agents" && (await isSidebarOpen($))) {
+  if ((await read($, station)) === "agents" && (await isSidebarShown($))) {
     await refreshAgents($, refresher);
   }
 }

@@ -80,7 +80,10 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
     /** Whether the Node helper is missing, so the mod reads the transcripts itself. */
     hasNoNode: false,
     /** The panes the mod has open, by id. */
-    panes: {} as Record<string, { title?: string }>,
+    panes: {} as Record<string, { title?: string; isPlaced: boolean }>,
+    /** Whether the terminal is too narrow to place a pane nobody asked for. */
+    isNarrow: false,
+    toasts: [] as string[],
     rateLimits: [
       { kind: "five_hour", percentUsed: 12, resetsAt: new Date(START + 2 * HOUR + 10 * 60_000).toISOString() },
       { kind: "seven_day", percentUsed: 85, resetsAt: new Date(START + 47 * HOUR + 5 * 60_000).toISOString() },
@@ -113,7 +116,8 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
     }
 
     if (figures.hasNoNode) {
-      throw new Error("spawn node ENOENT");
+      // A deny is how a call on `$` rejects, as it does when the command cannot start; a hook that throws is skipped instead.
+      return { deny: "spawn node ENOENT" };
     }
 
     figures.scanCalls.push({ argv: e.argv, stdin: e.init?.stdin });
@@ -121,8 +125,12 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
   });
   on("command.register", ($, e) => ({ value: { command: e.name } }));
   on("ui.open", ($, e) => {
-    figures.panes[e.id] = { title: e.title };
-    return { value: { isPlaced: true } };
+    figures.panes[e.id] = { title: e.title, isPlaced: !figures.isNarrow };
+    return { value: figures.isNarrow ? { isPlaced: false, reason: "unasked panes need 144 columns; 100 now" } : { isPlaced: true } };
+  });
+  on("ui.toast", ($, e) => {
+    figures.toasts.push(e.text);
+    return { value: undefined };
   });
   on("ui.panes", () => ({
     value: Object.entries(figures.panes).map(([id, pane]) => ({
@@ -130,7 +138,7 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
       title: pane.title ?? id,
       isShown: true,
       isFocused: false,
-      isPlaced: true,
+      isPlaced: pane.isPlaced,
     })),
   }));
   on("session.usage", ($, e) => ({
@@ -289,7 +297,7 @@ describe("chef-station", () => {
   test("the sidebar opens as the session starts, and a bare /chef reopens it on the same station", async ($, on) => {
     const { figures } = kitchen(on);
     await $.session.start({ surface: "desktop", isInteractive: true, cwd: "/work" } as any);
-    expect(figures.panes["chef-station"]).toEqual({ title: "Chef Station" });
+    expect(figures.panes["chef-station"]).toEqual({ title: "Chef Station", isPlaced: true });
 
     await $.command.run({ command: "chef", args: "trend" } as any);
     // The person closes the sidebar; a bare /chef brings it back without moving on a station.
@@ -297,6 +305,13 @@ describe("chef-station", () => {
     expect(await $.command.run({ command: "chef", args: "" } as any)).toMatchObject({ text: "Chef Station: trend" });
     expect(figures.panes["chef-station"]).toBeDefined();
     expect(await $.command.run({ command: "chef", args: "" } as any)).toMatchObject({ text: "Chef Station: breakdown" });
+  });
+
+  test("on a terminal too narrow for an unasked pane, a toast says how to open the sidebar", async ($, on) => {
+    const { figures } = kitchen(on);
+    figures.isNarrow = true;
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    expect(figures.toasts).toEqual(["Chef Station waits for a wider terminal. Type /chef to open it now."]);
   });
 
   test("before the session has started, the sidebar says it is getting ready", async ($, on) => {
@@ -702,9 +717,8 @@ describe("chef-station", () => {
 
     test("with no sessions folder, the list is empty rather than an error", async ($, on) => {
       kitchen(on);
-      on("fs.list", () => {
-        throw new Error("ENOENT");
-      });
+      // A deny is how a call on `$` rejects; a hook that throws is skipped instead.
+      on("fs.list", () => ({ deny: "ENOENT" }));
       await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
       await $.command.run({ command: "chef", args: "agents" } as any);
 
