@@ -8,14 +8,14 @@ https://github.com/user-attachments/assets/33ad4494-3bfb-48da-80f3-af303e1bfc2a
 
 ## Stations
 
-The sidebar has six stations. Press the button for a station, or focus the sidebar with `ctrl+x tab` and press its number. You can also type `/chef <station>`, or just `/chef` to cycle to the next one. The sidebar remembers the station you picked across sessions. `/chef backfill` rescans your Claude Code history. [Keyboard shortcuts](#keyboard-shortcuts) lists every key and command in one place.
+The sidebar has six stations, each a section that opens and closes like a disclosure: press its header, or focus the sidebar with `ctrl+x tab` and press the station's number. A closed section still shows one figure beside its header: today's spend and the tightest rate limit for Usage, this hour's spend for Trend, today's top model for Breakdown, the streak for Activity, how full the context window is for Context, and how many sessions are active or waiting for Agents. Usage starts open, and the sidebar remembers which sections you leave open across sessions. `/chef <station>` opens that station's section. `/chef backfill` rescans your Claude Code history. [Keyboard shortcuts](#keyboard-shortcuts) lists every key and command in one place.
 
 1. **Usage** shows your plan's rate-limit windows (the five-hour session and the week) with their reset countdowns, what today has cost in API value along with the token count and the share served from cache, and a "Now" row for the current session: the project, the model, the tokens written, the session cost, how full the context window is, how long the prompt cache stays warm, and a stopwatch for the running turn (once the turn ends, it shows how long the turn took).
 2. **Trend** draws today's spend hour by hour.
 3. **Breakdown** ranks today's spend by model and by project.
 4. **Activity** draws a thirteen-week heat map of tokens per day, with the total, the number of active days, the busiest day and your current streak.
 5. **Context** shows how the current context window is divided, as `/context` breaks it down: the system prompt, system tools, MCP tools, custom agents, memory files, skills and messages, then the free space and the auto-compact buffer. A legend below the bar names each category with its tokens and its share of the window. Tool schemas that load on demand sit outside the window, so they are left out. The breakdown is estimated locally, the same way `/context` estimates it, and refreshes after every turn. Below the legend, **Compact** (hotkey `c`) compacts the conversation the way `/compact` does and says how many tokens it saved. **Clear** (hotkey `x`) ends the conversation and starts a new one, as `/clear` does, after asking you to confirm with `y` or cancel with `n`. Neither can run during a turn, so while Claude is working the buttons give way to a short note.
-6. **Agents** lists every Claude Code session running on this machine, in the desktop app, in a terminal or in the background: busy sessions first, then the most recently active. Each card shows the session's name and topic, where it runs, its project and process ID, what it is doing now or did last, and the last thing you asked it. The list comes from the files each running session writes to `~/.claude/sessions` (or `$CLAUDE_CONFIG_DIR/sessions`), checked against `ps` so a session that has ended, or whose process ID was reused, is left out, and from the end of each session's transcript. It refreshes every five seconds while the station shows, and not at all otherwise. It needs `ps` and `tail`, so it works on macOS and Linux.
+6. **Agents** lists every Claude Code session running on this machine, in the desktop app, in a terminal or in the background. Sessions that are busy, waiting on you, or active in the last fifteen minutes are shown in full, waiting ones first: the session's name and topic, where it runs, its project and process ID, what it is doing now or did last, and the last thing you asked it. The other, idle sessions fold into one row that opens to a line each. The list comes from the files each running session writes to `~/.claude/sessions` (or `$CLAUDE_CONFIG_DIR/sessions`), checked against `ps` so a session that has ended, or whose process ID was reused, is left out, and from the end of each session's transcript. It refreshes as the session starts, every five seconds while the section is open, once a minute while it is closed so its header's figure stays current, and not at all while the sidebar is out of sight. It needs `ps` and `tail`, so it works on macOS and Linux.
 
 The Context station's colors come from a categorical palette checked with a data-visualization validator against both a light and a dark terminal background, because the sidebar cannot rely on knowing which one you use. Segments that touch are always colors validated as a pair, including for protanopia and deuteranopia. The colors are handed out in the bar's order to guarantee that, so a category's color can change when another category appears or disappears. A one-cell gap separates segments, free space and the buffer are drawn as textures rather than hues, and the legend names every color, so nothing is told apart by color alone.
 
@@ -28,7 +28,7 @@ The station and button keys work only while the sidebar has focus, so they never
 | `ctrl+x tab` | Anywhere | Focuses the sidebar. |
 | `Esc` | Sidebar focused | Returns to the prompt. |
 | `ctrl+x x` | Anywhere | Closes the sidebar, as its close mark does. It stays closed for the rest of the session until `/chef` opens it again. |
-| `1` to `6` | Sidebar focused | Switches to Usage, Trend, Breakdown, Activity, Context or Agents. |
+| `1` to `6` | Sidebar focused | Opens or closes Usage, Trend, Breakdown, Activity, Context or Agents. |
 | `c` | Context station | Compacts the conversation. |
 | `x` | Context station | Asks to clear the conversation. |
 | `y` | Clear confirmation | Clears the conversation and starts a new one. |
@@ -38,8 +38,8 @@ The sidebar also answers to `/chef` at the prompt:
 
 | Command | What it does |
 | :- | :- |
-| `/chef` | Opens the sidebar on the station it last showed, or cycles to the next station when it is already open. |
-| `/chef usage`, `/chef trend`, `/chef breakdown`, `/chef activity`, `/chef context`, `/chef agents` | Opens the sidebar on that station. |
+| `/chef` | Opens the sidebar. |
+| `/chef usage`, `/chef trend`, `/chef breakdown`, `/chef activity`, `/chef context`, `/chef agents` | Opens the sidebar with that station's section open. |
 | `/chef backfill` | Rescans your Claude Code history. |
 
 ## The prompt cache countdown

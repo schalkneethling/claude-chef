@@ -1,5 +1,5 @@
 /**
- * The six stations of the sidebar, one per button of its header.
+ * The six stations of the sidebar, each a section that opens and closes.
  */
 export type ChefStationName = "usage" | "trend" | "breakdown" | "activity" | "context" | "agents";
 
@@ -122,8 +122,8 @@ export type ChefStationCache = {
 /** Where a Claude Code session runs: the desktop app, a terminal, or in the background. */
 export type ChefStationAgentSurface = "desktop" | "terminal" | "background";
 
-/** What a session's own registry entry says it is doing. */
-export type ChefStationAgentStatus = "busy" | "idle" | "unknown";
+/** What a session's own registry entry says it is doing; `waiting` sessions wait on the person. */
+export type ChefStationAgentStatus = "busy" | "waiting" | "idle" | "unknown";
 
 /** A session's latest assistant step: a tool call it made, or text it wrote. */
 export type ChefStationAgentAction = { kind: "tool" | "reply"; text: string };
@@ -160,8 +160,10 @@ export type ChefStationAgents = {
 declare module "claude-code" {
   interface PluginState {
     "chef-station": {
-      /** The station the sidebar shows. */
-      station: ChefStationName;
+      /** The stations whose sections are open, mirrored from `$.store` so they last across sessions. */
+      openSections: ChefStationName[];
+      /** Whether the Agents station lists its idle sessions or keeps them folded under one row. */
+      isIdleOpen: boolean;
       /** The persisted ledger, mirrored here so the sidebar redraws when it moves. */
       ledger: ChefStationLedger;
       /** This session's live figures. */
