@@ -32,7 +32,14 @@ type JsonObject = Record<string, unknown>;
 /** The marker Claude Code writes as a user line when the person presses Esc mid-turn. */
 const INTERRUPTION_MARKER = /^\[Request interrupted by user/;
 
-const STATUS_ORDER: Record<ChefStationAgentStatus, number> = { busy: 0, unknown: 1, idle: 2 };
+/** Sessions waiting on the person come first, as they are the ones that need them. */
+const STATUS_ORDER: Record<ChefStationAgentStatus, number> = { waiting: 0, busy: 1, unknown: 2, idle: 3 };
+
+/** A session that wrote a prompt or a response this recently still counts as active, though idle now. */
+export const ACTIVE_WINDOW_MS = 15 * 60_000;
+
+/** Every status a registry entry may name; anything else reads as `unknown`. */
+const STATUSES: readonly ChefStationAgentStatus[] = ["busy", "waiting", "idle"];
 
 export const SURFACE_LABELS: Record<ChefStationAgentSurface, string> = {
   desktop: "Desktop app",
@@ -71,7 +78,7 @@ export function parseRegistryEntry(text: string): RegistryEntry | undefined {
     name: stringOf(parsed.name) ?? lastSegmentOf(cwd),
     kind: stringOf(parsed.kind) ?? "interactive",
     entrypoint: stringOf(parsed.entrypoint) ?? "cli",
-    status: parsed.status === "busy" || parsed.status === "idle" ? parsed.status : "unknown",
+    status: STATUSES.find((status) => status === parsed.status) ?? "unknown",
     startedAt: typeof startedAt === "number" ? startedAt : undefined,
     procStart: stringOf(parsed.procStart),
   };
@@ -220,7 +227,24 @@ export function toAgent(entry: RegistryEntry, transcript: TranscriptSummary): Ch
   };
 }
 
-/** Busy sessions first, then the most recently active. */
+/**
+ * Splits sessions into the active ones, shown in full, and the idle ones,
+ * folded away: active means busy, waiting, or active within the last
+ * fifteen minutes. Each part keeps the order it was given.
+ */
+export function partitionAgents(
+  agents: readonly ChefStationAgent[],
+  now: number,
+): { active: ChefStationAgent[]; idle: ChefStationAgent[] } {
+  const isActive = (agent: ChefStationAgent) =>
+    agent.status === "busy" ||
+    agent.status === "waiting" ||
+    (agent.lastActivityAt !== undefined && now - agent.lastActivityAt <= ACTIVE_WINDOW_MS);
+
+  return { active: agents.filter(isActive), idle: agents.filter((agent) => !isActive(agent)) };
+}
+
+/** Waiting sessions first, then busy ones, then the most recently active. */
 export function sortAgents(agents: readonly ChefStationAgent[]): ChefStationAgent[] {
   return [...agents].sort(
     (a, b) =>

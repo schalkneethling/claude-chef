@@ -33,7 +33,10 @@ function breakdownOf(systemPrompt: number, messages: number) {
   };
 }
 
-/** The colors of the context bar's segments, left to right: the Texts drawn with block or shade glyphs in the first row that has several. */
+/**
+ * The colors of the context bar's segments, left to right: the Texts drawn with block or shade glyphs in
+ * the row that has the most of them, as Usage's meters, open beside it, have only two.
+ */
 async function barColors(ui: { drawn: () => Promise<unknown> }): Promise<string[]> {
   const rows: string[][] = [];
   const walk = (node: any) => {
@@ -52,7 +55,7 @@ async function barColors(ui: { drawn: () => Promise<unknown> }): Promise<string[
   };
 
   walk(await ui.drawn());
-  return rows[0] ?? [];
+  return rows.reduce<string[]>((most, row) => (row.length > most.length ? row : most), []);
 }
 
 /** What the Node helper prints when it finds nothing. */
@@ -91,7 +94,17 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
   };
 
   const clock = mock.clock(on, { now: START });
-  mock.store(on, store);
+  // The store as a plain object the test holds, so a test can read what the mod kept for the next session.
+  on("store.get", ($, e) => ({ value: store[e.key] }));
+  on("store.set", ($, e) => {
+    store[e.key] = e.value;
+    return { value: undefined };
+  });
+  on("store.delete", ($, e) => {
+    delete store[e.key];
+    return { value: undefined };
+  });
+  on("store.keys", () => ({ value: Object.keys(store) }));
   mock.env(on, { HOME: "/home/chef" });
   on("session.start", ($, e) => ({ cwd: e.cwd }));
   on("session.root", () => ({ value: "/work/create-project-calavera" }));
@@ -231,7 +244,7 @@ describe("chef-station", () => {
     await $.turn.complete({ ...opusTurn, agentId: "sub", usage: { ...opusTurn.usage, model: "claude-haiku-4-5-20251001" } } as any);
 
     const ui = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
-    await ui.press({ key: "station-breakdown" });
+    await ui.press({ key: "section-breakdown" });
 
     expect(await ui.find({ type: "Text", text: "Opus 5.5" })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /\$1\.50/ })).toBeDefined();
@@ -280,31 +293,66 @@ describe("chef-station", () => {
     await $.turn.complete(opusTurn as any);
 
     const ui = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
-    await ui.press({ key: "station-trend" });
+    await ui.press({ key: "section-trend" });
     expect(await ui.find({ type: "Text", text: "Today · $4.25" })).toBeDefined();
     await ui.unmount();
   });
 
-  test("/chef switches stations and refuses unknown ones", async ($, on) => {
+  test("/chef opens a station's section and refuses unknown ones", async ($, on) => {
     kitchen(on);
     await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
 
-    expect(await $.command.run({ command: "chef", args: "activity" } as any)).toMatchObject({ text: "Chef Station: activity" });
-    expect(await $.command.run({ command: "chef", args: "" } as any)).toMatchObject({ text: "Chef Station: context" });
+    expect(await $.command.run({ command: "chef", args: "activity" } as any)).toMatchObject({ text: "Chef Station: activity is open." });
     expect(await $.command.run({ command: "chef", args: "pantry" } as any)).toMatchObject({ text: expect.stringContaining("No station") });
+
+    const ui = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
+    expect(await ui.find({ type: "Button", text: "▾ Activity" })).toBeDefined();
+    expect(await ui.find({ type: "Button", text: "▾ Usage" })).toBeDefined();
+    expect(await ui.find({ type: "Button", text: "▸ Trend" })).toBeDefined();
+    await ui.unmount();
   });
 
-  test("the sidebar opens as the session starts, and a bare /chef reopens it on the same station", async ($, on) => {
+  test("the sidebar opens as the session starts, and a bare /chef reopens it", async ($, on) => {
     const { figures } = kitchen(on);
     await $.session.start({ surface: "desktop", isInteractive: true, cwd: "/work" } as any);
     expect(figures.panes["chef-station"]).toEqual({ title: "Chef Station", isPlaced: true });
 
-    await $.command.run({ command: "chef", args: "trend" } as any);
-    // The person closes the sidebar; a bare /chef brings it back without moving on a station.
+    // The person closes the sidebar; a bare /chef brings it back.
     delete figures.panes["chef-station"];
-    expect(await $.command.run({ command: "chef", args: "" } as any)).toMatchObject({ text: "Chef Station: trend" });
+    expect(await $.command.run({ command: "chef", args: "" } as any)).toMatchObject({ text: "Chef Station is open." });
     expect(figures.panes["chef-station"]).toBeDefined();
-    expect(await $.command.run({ command: "chef", args: "" } as any)).toMatchObject({ text: "Chef Station: breakdown" });
+  });
+
+  test("a section's header opens and closes it, and the open sections carry over to the next session", async ($, on) => {
+    const store: Record<string, unknown> = {};
+    kitchen(on, store);
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    const ui = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
+
+    // Only Usage starts open; Breakdown's header still shows what it would show.
+    expect(await ui.find({ type: "Button", text: "▾ Usage" })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: "Today" })).toBeDefined();
+    expect(await ui.find({ type: "Button", text: "▸ Context" })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: "12% used" })).toBeDefined();
+
+    await ui.press({ key: "section-usage" });
+    await ui.press({ key: "section-context" });
+    expect(await ui.find({ type: "Button", text: "▸ Usage" })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: "Today" })).toBeUndefined();
+    expect(await ui.find({ type: "Button", text: "▾ Context" })).toBeDefined();
+    expect(store.openSections).toEqual(["context"]);
+    await ui.unmount();
+  });
+
+  test("the station 0.6.0 showed starts open beside Usage", async ($, on) => {
+    kitchen(on, { station: "activity" });
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    const ui = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
+
+    expect(await ui.find({ type: "Button", text: "▾ Usage" })).toBeDefined();
+    expect(await ui.find({ type: "Button", text: "▾ Activity" })).toBeDefined();
+    expect(await ui.find({ type: "Button", text: "▸ Trend" })).toBeDefined();
+    await ui.unmount();
   });
 
   test("on a terminal too narrow for an unasked pane, a toast says how to open the sidebar", async ($, on) => {
@@ -401,7 +449,7 @@ describe("chef-station", () => {
 
     const ui = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
     expect(await ui.find({ type: "Text", text: /^\$6\.00$/ })).toBeDefined();
-    await ui.press({ key: "station-breakdown" });
+    await ui.press({ key: "section-breakdown" });
     expect(await ui.find({ type: "Text", text: "Sonnet 5.5" })).toBeDefined();
     expect(await ui.find({ type: "Text", text: "Opus 5.5" })).toBeDefined();
     await ui.unmount();
@@ -513,7 +561,7 @@ describe("chef-station", () => {
   test("the context station breaks the window down by category, and follows each turn", async ($, on) => {
     const { figures } = kitchen(on);
     await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
-    expect(await $.command.run({ command: "chef", args: "context" } as any)).toMatchObject({ text: "Chef Station: context" });
+    expect(await $.command.run({ command: "chef", args: "context" } as any)).toMatchObject({ text: "Chef Station: context is open." });
 
     for (const surface of ["terminal", "desktop"] as const) {
       const ui = await $.ui.mount({ ...PANE, surface } as any);
@@ -646,11 +694,12 @@ describe("chef-station", () => {
     const SESSIONS = "/home/chef/.claude/sessions";
     const SHOP_TRANSCRIPT = "/home/chef/.claude/projects/-work-shop/shop-session.jsonl";
 
-    /** Four registered sessions: a busy one in the desktop app, an idle terminal, one that ended and one whose pid was reused. */
+    /** Five registered sessions: a busy one in the desktop app, an idle terminal, one waiting on the person, one that ended and one whose pid was reused. */
     function registerSessions(on: On, figures: ReturnType<typeof kitchen>["figures"]) {
       const entries = [
         { pid: 4242, sessionId: "shop-session", cwd: "/work/shop", name: "Checkout fixes", entrypoint: "claude-desktop", status: "busy", procStart: "Tue Oct  6 11:00:00 2026" },
         { pid: 77, sessionId: "cli-session", cwd: "/work/cli", name: "cli", entrypoint: "cli", status: "idle", procStart: "Tue Oct  6 10:00:00 2026" },
+        { pid: 88, sessionId: "ask-session", cwd: "/work/api", name: "API review", entrypoint: "cli", status: "waiting", procStart: "Tue Oct  6 12:00:00 2026" },
         { pid: 999, sessionId: "ended-session", cwd: "/work/old", name: "Ended", entrypoint: "cli", status: "idle", procStart: "Mon Oct  5 09:00:00 2026" },
         { pid: 555, sessionId: "reused-session", cwd: "/work/old", name: "Reused", entrypoint: "cli", status: "busy", procStart: "Mon Oct  5 08:00:00 2026" },
       ];
@@ -660,7 +709,7 @@ describe("chef-station", () => {
       }
 
       // pid 999 is gone, and pid 555 now belongs to a process that started later.
-      figures.ps = ["4242 Tue Oct  6 11:00:00 2026", "  77 Tue Oct  6 10:00:00 2026", " 555 Tue Oct  6 13:00:00 2026"].join("\n");
+      figures.ps = ["4242 Tue Oct  6 11:00:00 2026", "  77 Tue Oct  6 10:00:00 2026", "  88 Tue Oct  6 12:00:00 2026", " 555 Tue Oct  6 13:00:00 2026"].join("\n");
       figures.transcripts[SHOP_TRANSCRIPT] = [
         JSON.stringify({ type: "user", timestamp: new Date(START - 120_000).toISOString(), message: { content: "Fix the voucher bug" } }),
         JSON.stringify({
@@ -679,20 +728,29 @@ describe("chef-station", () => {
     }
 
     for (const surface of ["terminal", "desktop"] as const) {
-      test(`lists every live session, busy first, and leaves out ended ones, on ${surface}`, async ($, on) => {
+      test(`shows active sessions in full, waiting first, folds idle ones, and leaves out ended ones, on ${surface}`, async ($, on) => {
         const { figures } = kitchen(on);
         registerSessions(on, figures);
         await $.session.start({ surface, isInteractive: true, cwd: "/work" } as any);
-        expect(await $.command.run({ command: "chef", args: "agents" } as any)).toMatchObject({ text: "Chef Station: agents" });
+        expect(await $.command.run({ command: "chef", args: "agents" } as any)).toMatchObject({ text: "Chef Station: agents is open." });
 
         const ui = await $.ui.mount({ ...PANE, surface } as any);
-        expect(await ui.find({ type: "Text", text: "2 sessions · 1 busy · updated just now" })).toBeDefined();
+        expect(await ui.find({ type: "Text", text: "1 waiting · 2 active of 3" })).toBeDefined();
+        expect(await ui.find({ type: "Text", text: "Waiting · Terminal · api · pid 88" })).toBeDefined();
         expect(await ui.find({ type: "Text", text: "● Checkout fixes" })).toBeDefined();
         expect(await ui.find({ type: "Text", text: "Busy · Desktop app · shop · pid 4242" })).toBeDefined();
         expect(await ui.find({ type: "Text", text: "Now: Edit: voucher.ts · 1m ago" })).toBeDefined();
         expect(await ui.find({ type: "Text", text: "Last asked: “Fix the voucher bug”" })).toBeDefined();
-        expect(await ui.find({ type: "Text", text: "Idle · Terminal · cli · pid 77" })).toBeDefined();
         expect(await ui.find({ type: "Text", text: /Ended|Reused/ })).toBeUndefined();
+
+        // The waiting session needs the person, so it comes first.
+        const names = (await ui.findAll({ type: "Text", text: /^[●○] \S/ })).map((found) => found.text);
+        expect(names).toEqual(["● API review", "● Checkout fixes"]);
+
+        // The idle terminal session is folded under one row until it is opened.
+        expect(await ui.find({ type: "Text", text: /cli · Terminal/ })).toBeUndefined();
+        await ui.press({ key: "agents-idle" });
+        expect(await ui.find({ type: "Text", text: "○ cli · Terminal · cli" })).toBeDefined();
         await ui.unmount();
       });
     }
@@ -723,7 +781,8 @@ describe("chef-station", () => {
       await $.command.run({ command: "chef", args: "agents" } as any);
 
       const ui = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
-      expect(await ui.find({ type: "Text", text: "0 sessions · 0 busy · updated just now" })).toBeDefined();
+      expect(await ui.find({ type: "Text", text: "0 active of 0" })).toBeDefined();
+      expect(await ui.find({ type: "Text", text: "No session is busy or has been active in the last 15 minutes." })).toBeDefined();
       await ui.unmount();
     });
 

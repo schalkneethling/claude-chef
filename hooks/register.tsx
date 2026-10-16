@@ -39,7 +39,12 @@ const SESSION_KEY_PREFIX = "turns:";
 const BACKFILL_KEY = "backfill";
 /** The single shared ledger of version 0.2.0, still read so its turns are not lost. */
 const LEGACY_LEDGER_KEY = "ledger";
-const STATION_KEY = "station";
+/** The stations whose sections are open, kept across sessions. */
+const OPEN_SECTIONS_KEY = "openSections";
+/** The one station shown by version 0.6.0 and earlier, still read once so its section starts open. */
+const LEGACY_STATION_KEY = "station";
+/** Usage is open until the person says otherwise. */
+const DEFAULT_OPEN_SECTIONS: readonly ChefStationName[] = ["usage"];
 /** Countdowns and other sessions' spending move while this one is idle. */
 const TICK_MS = 60_000;
 /** The turn's stopwatch moves every second while a turn runs. */
@@ -55,7 +60,8 @@ const AGENTS_TICK_MS = 5_000;
 const AGENTS_TAIL_BYTES = 256 * 1024;
 
 // Held by the host, so the sidebar survives a hot reload of this file.
-const station = atom({ plugin: "chef-station", key: "station" } as const, "usage" as ChefStationName);
+const openSections = atom({ plugin: "chef-station", key: "openSections" } as const, [...DEFAULT_OPEN_SECTIONS] as ChefStationName[]);
+const isIdleOpen = atom({ plugin: "chef-station", key: "isIdleOpen" } as const, false);
 const ledger = atom({ plugin: "chef-station", key: "ledger" } as const, emptyLedger());
 const live = atom({ plugin: "chef-station", key: "live" } as const, null as ChefStationLive | null);
 const now = atom({ plugin: "chef-station", key: "now" } as const, 0);
@@ -97,7 +103,7 @@ export const register: Register = (on, options) => {
     const usage = await $.session.usage();
     const root = await $.session.root();
     const model = modelName(await $.session.model());
-    const saved = await $.store.get(STATION_KEY);
+    const saved = await loadOpenSections($);
 
     await update($, live, () => ({
       project: basename(root),
@@ -113,14 +119,12 @@ export const register: Register = (on, options) => {
     await tick($);
     await refreshContext($).catch(() => undefined);
 
-    if (isStation(saved)) {
-      await update($, station, () => saved);
-    }
+    await update($, openSections, () => saved);
 
     await $.command.register({
       name: "chef",
-      description: "Show a station of the Chef Station sidebar, or rescan your Claude Code history with backfill.",
-      argumentHint: "[usage|trend|breakdown|activity|context|backfill]",
+      description: "Open the Chef Station sidebar or one of its stations, or rescan your Claude Code history with backfill.",
+      argumentHint: "[usage|trend|breakdown|activity|context|agents|backfill]",
       immediate: true,
     });
 
@@ -145,7 +149,7 @@ export const register: Register = (on, options) => {
     }
 
     // After the command and the pane, so a slow `ps` never holds the session's start.
-    if (saved === "agents") {
+    if (saved.includes("agents")) {
       refreshAgents($, agentsRefresher).catch(() => undefined);
     }
 
@@ -317,21 +321,17 @@ export const register: Register = (on, options) => {
       };
     }
 
-    // A bare /chef brings back a sidebar that is closed or out of sight on the station it
-    // showed, and cycles once the sidebar is in view.
-    const wasShown = await isSidebarShown($);
     await update($, isSidebarClosed, () => false);
     // Opened from the person's command, so the pane is placed at any width. Another plugin
-    // may refuse it; the station still changes, for when the sidebar next opens.
+    // may refuse it; the section still opens, for when the sidebar next shows.
     await $.ui.open({ id: PANE_ID, title: PANE_TITLE }).catch(() => undefined);
 
-    if (asked === "" && !wasShown) {
-      return { text: `Chef Station: ${await read($, station)}` };
+    if (asked === "") {
+      return { text: "Chef Station is open." };
     }
 
-    const chosen = asked === "" ? nextStation(await read($, station)) : asked;
-    await select($, chosen, agentsRefresher);
-    return { text: `Chef Station: ${chosen}` };
+    await openSection($, asked, agentsRefresher);
+    return { text: `Chef Station: ${asked} is open.` };
   });
 
   on("ui.render", { component: "Pane", requestId: PANE_ID }, async ($, e) => {
@@ -348,7 +348,7 @@ export const register: Register = (on, options) => {
 
     return sidebar({
       ui,
-      station: await read($, station),
+      openSections: await read($, openSections),
       ledger: currentLedger,
       live: currentLive,
       now: currentNow || currentLive.startedAt,
@@ -359,11 +359,15 @@ export const register: Register = (on, options) => {
       contextAction: await read($, contextAction),
       onContextAction: (action) => void runContextAction($, action),
       agents: await read($, agents),
+      isIdleOpen: await read($, isIdleOpen),
       // The pane is told nothing about turns, so the running turn's start says Claude is working.
       isWorking: currentLive.turnStartedAt !== undefined,
       columns: e.props.bodyColumns,
-      onSelect: (name) => {
-        select($, name, agentsRefresher).catch(() => undefined);
+      onToggle: (name) => {
+        toggleSection($, name, agentsRefresher).catch(() => undefined);
+      },
+      onToggleIdle: () => {
+        update($, isIdleOpen, (before) => !before).catch(() => undefined);
       },
     });
   });
@@ -515,12 +519,36 @@ async function readTranscriptTail($: EngineInterface, path: string): Promise<str
 }
 
 /**
- * Shows a station, remembers it for the next session, and fills in what that
- * station needs: a measurement of the context, or the list of live sessions.
+ * The open sections the person left, from the store; before 0.7.0 kept them,
+ * the defaults plus the one station 0.6.0 and earlier showed.
  */
-async function select($: EngineInterface, name: ChefStationName, refresher: AgentsRefresher) {
-  await update($, station, () => name);
-  await $.store.set(STATION_KEY, name);
+async function loadOpenSections($: EngineInterface): Promise<ChefStationName[]> {
+  const stored = await $.store.get(OPEN_SECTIONS_KEY);
+
+  if (Array.isArray(stored)) {
+    return stored.filter(isStation);
+  }
+
+  const legacy = await $.store.get(LEGACY_STATION_KEY);
+  return isStation(legacy) && !DEFAULT_OPEN_SECTIONS.includes(legacy) ? [...DEFAULT_OPEN_SECTIONS, legacy] : [...DEFAULT_OPEN_SECTIONS];
+}
+
+/** Opens a station's section, or closes it when it is open. */
+async function toggleSection($: EngineInterface, name: ChefStationName, refresher: AgentsRefresher) {
+  if ((await read($, openSections)).includes(name)) {
+    await setOpenSections($, (before) => before.filter((open) => open !== name));
+  } else {
+    await openSection($, name, refresher);
+  }
+}
+
+/**
+ * Opens a station's section, remembers it for the next session, and fills in
+ * what that station needs: a measurement of the context, or the list of live sessions.
+ */
+async function openSection($: EngineInterface, name: ChefStationName, refresher: AgentsRefresher) {
+  // Kept in the stations' own order, so the stored list reads the way the sidebar does.
+  await setOpenSections($, (before) => STATIONS.map((entry) => entry.name).filter((open) => open === name || before.includes(open)));
 
   if (name === "context") {
     await refreshContext($).catch(() => undefined);
@@ -531,9 +559,9 @@ async function select($: EngineInterface, name: ChefStationName, refresher: Agen
   }
 }
 
-function nextStation(current: ChefStationName): ChefStationName {
-  const index = STATIONS.findIndex((entry) => entry.name === current);
-  return STATIONS[(index + 1) % STATIONS.length]!.name;
+async function setOpenSections($: EngineInterface, change: (before: ChefStationName[]) => ChefStationName[]) {
+  const after = await update($, openSections, change);
+  await $.store.set(OPEN_SECTIONS_KEY, after);
 }
 
 /** Whether the person can see the sidebar: open, placed (not waiting for a wider terminal) and not behind another tab. */
@@ -542,9 +570,9 @@ async function isSidebarShown($: EngineInterface): Promise<boolean> {
   return panes.some((pane) => pane.id === PANE_ID && pane.isPlaced && pane.isShown);
 }
 
-/** The timer's refresh: only while the Agents station is in view, so it costs nothing otherwise. */
+/** The timer's refresh: only while the Agents section is open and in view, so it costs nothing otherwise. */
 async function refreshAgentsWhileShown($: EngineInterface, refresher: AgentsRefresher) {
-  if ((await read($, station)) === "agents" && (await isSidebarShown($))) {
+  if ((await read($, openSections)).includes("agents") && (await isSidebarShown($))) {
     await refreshAgents($, refresher);
   }
 }

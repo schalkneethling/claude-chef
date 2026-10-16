@@ -10,7 +10,7 @@ import type {
   ChefStationLive,
   ChefStationName,
 } from "../types";
-import { SURFACE_LABELS } from "./agents";
+import { partitionAgents, SURFACE_LABELS } from "./agents";
 import { cacheLabel, cacheStatus } from "./cache";
 import { allocateCells, contextSegments } from "./context";
 import { ago, bar, countdown, elapsed, money, short, verticalBars } from "./format";
@@ -21,7 +21,8 @@ export type Ui = Pick<Elements["terminal"], "Box" | "Text" | "Button">;
 
 export type SidebarView = {
   ui: Ui;
-  station: ChefStationName;
+  /** The stations whose sections are open, each drawing its body under its header. */
+  openSections: readonly ChefStationName[];
   ledger: ChefStationLedger;
   live?: ChefStationLive;
   now: number;
@@ -37,9 +38,12 @@ export type SidebarView = {
   onContextAction?: (action: "compact" | "clear" | "confirm-clear" | "cancel-clear") => void;
   /** Every live Claude Code session on this machine, for the Agents station. */
   agents?: ChefStationAgents;
+  /** Whether the Agents station lists its idle sessions or keeps them folded under one row. */
+  isIdleOpen: boolean;
   isWorking: boolean;
   columns: number;
-  onSelect: (station: ChefStationName) => void;
+  onToggle: (station: ChefStationName) => void;
+  onToggleIdle: () => void;
 };
 
 export const STATIONS: { name: ChefStationName; label: string; hotkey: string }[] = [
@@ -62,44 +66,91 @@ const RATE_LIMIT_LABELS: Record<string, string> = {
 const LABEL_WIDTH = 10;
 const ACCENT = "claude";
 const MUTED = "subtle";
+/** What a section's frame takes from the width: its border and its padding, a cell each side. */
+const SECTION_FRAME_COLUMNS = 4;
 
 export function sidebar(view: SidebarView) {
-  const { Box } = view.ui;
+  const { Box, Text } = view.ui;
 
   return (
     <Box flexDirection="column" paddingX={1}>
-      {header(view)}
-      {station(view)}
+      <Box flexDirection="row" columnGap={1}>
+        <Text color={ACCENT} bold>
+          ✻ Claude
+        </Text>
+        {view.plan ? <Text color={ACCENT}>{view.plan}</Text> : null}
+      </Box>
+      {STATIONS.map((entry) => section(view, entry))}
     </Box>
   );
 }
 
-function header({ ui, station, plan, onSelect }: SidebarView) {
-  const { Box, Text, Button } = ui;
+/**
+ * One station as a section that opens and closes like a disclosure: a header
+ * that toggles it, with a one-line summary beside it so a closed section
+ * still says something, and the station's body below while it is open.
+ */
+function section(view: SidebarView, entry: (typeof STATIONS)[number]) {
+  const { Box, Text, Button } = view.ui;
+  const isOpen = view.openSections.includes(entry.name);
+  const summary = summaryOf(entry.name, view);
+  // The body draws inside the frame, so it is told the width it really has.
+  const body = { ...view, columns: Math.max(10, view.columns - SECTION_FRAME_COLUMNS) };
 
   return (
-    <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-      <Text color={ACCENT} bold>
-        ✻ Claude
-      </Text>
-      {plan ? <Text color={ACCENT}>{plan}</Text> : null}
-      <Text dimColor>·</Text>
-      {STATIONS.map((entry) => (
-        <Button
-          key={`station-${entry.name}`}
-          label={entry.label}
-          hotkey={entry.hotkey}
-          variant={entry.name === station ? "primary" : "secondary"}
-          onPress={() => onSelect(entry.name)}
-        />
-      ))}
+    <Box flexDirection="column" borderStyle="round" borderColor="inactive" paddingX={1} marginTop={1}>
+      <Box flexDirection="row" justifyContent="space-between" columnGap={1}>
+        <Button key={`section-${entry.name}`} plain hotkey={entry.hotkey} onPress={() => view.onToggle(entry.name)}>
+          {`${isOpen ? "▾" : "▸"} ${entry.label}`}
+        </Button>
+        {summary ? (
+          <Text dimColor wrap="truncate-end">
+            {summary}
+          </Text>
+        ) : null}
+      </Box>
+      {isOpen ? station(entry.name, body) : null}
     </Box>
   );
 }
 
-/** The body of the station the sidebar shows. */
-function station(view: SidebarView) {
-  switch (view.station) {
+/** The line beside a section's header: the one figure worth seeing while the section is closed. */
+function summaryOf(name: ChefStationName, { ledger, live, now, context, agents }: SidebarView): string | undefined {
+  switch (name) {
+    case "usage": {
+      const spent = `${money(today(ledger, now).usd)} today`;
+      const tightest = [...(live?.rateLimits ?? [])].sort((a, b) => b.percentUsed - a.percentUsed)[0];
+      return tightest ? `${spent} · ${RATE_LIMIT_LABELS[tightest.kind] ?? tightest.kind} ${Math.round(tightest.percentUsed)}%` : spent;
+    }
+    case "trend":
+      return `${money(hourly(ledger, now)[new Date(now).getHours()] ?? 0)} this hour`;
+    case "breakdown": {
+      const top = ranked(today(ledger, now).models, 1)[0];
+      return top ? `${top.name} ${money(top.usd)}` : undefined;
+    }
+    case "activity": {
+      const { streak, activeDays } = activity(ledger, now);
+      return streak > 0 ? `${streak}-day streak` : `${activeDays} active days`;
+    }
+    case "context": {
+      const percent = context ? (context.totalTokens / context.maxTokens) * 100 : live?.contextPercent;
+      return percent === undefined ? undefined : `${Math.round(percent)}% used`;
+    }
+    case "agents": {
+      if (!agents || agents.refreshedAt === 0) {
+        return undefined;
+      }
+
+      const { active } = partitionAgents(agents.agents, now);
+      const waiting = agents.agents.filter((agent) => agent.status === "waiting").length;
+      return `${waiting > 0 ? `${waiting} waiting · ` : ""}${active.length} active of ${agents.agents.length}`;
+    }
+  }
+}
+
+/** The body of one station's section. */
+function station(name: ChefStationName, view: SidebarView) {
+  switch (name) {
     case "trend":
       return trend(view);
     case "breakdown":
@@ -474,8 +525,8 @@ function contextActions(
  * The Agents station: every live Claude Code session on this machine, busy
  * ones first, with what each is doing and what it was last asked.
  */
-function agentsList({ ui, agents, now }: SidebarView) {
-  const { Box, Text } = ui;
+function agentsList({ ui, agents, now, isIdleOpen, onToggleIdle }: SidebarView) {
+  const { Box, Text, Button } = ui;
 
   if (!agents || (agents.refreshedAt === 0 && !agents.error)) {
     return (
@@ -485,34 +536,55 @@ function agentsList({ ui, agents, now }: SidebarView) {
     );
   }
 
-  const busyCount = agents.agents.filter((agent) => agent.status === "busy").length;
-  const sessionCount = `${agents.agents.length} ${agents.agents.length === 1 ? "session" : "sessions"}`;
+  const { active, idle } = partitionAgents(agents.agents, now);
 
   return (
     <Box flexDirection="column" marginTop={1} gap={1}>
       {/* Before the first refresh that worked there is no list to describe, only the error. */}
-      {agents.refreshedAt === 0 ? null : (
-        <Text dimColor>{`${sessionCount} · ${busyCount} busy · updated ${ago(now - agents.refreshedAt)}`}</Text>
-      )}
+      {agents.refreshedAt === 0 ? null : <Text dimColor>{`Updated ${ago(now - agents.refreshedAt)}`}</Text>}
       {agents.error ? <Text color="error">{`Could not refresh: ${agents.error}`}</Text> : null}
-      {agents.agents.map((agent) => agentCard(ui, agent, now))}
+      {agents.refreshedAt !== 0 && active.length === 0 ? <Text dimColor>No session is busy or has been active in the last 15 minutes.</Text> : null}
+      {active.map((agent) => agentCard(ui, agent, now))}
+      {idle.length > 0 ? (
+        <Box flexDirection="column">
+          <Button key="agents-idle" plain onPress={onToggleIdle}>
+            {`${isIdleOpen ? "▾" : "▸"} ${idle.length} idle ${idle.length === 1 ? "session" : "sessions"}`}
+          </Button>
+          {isIdleOpen ? idle.map((agent) => idleRow(ui, agent, now)) : null}
+        </Box>
+      ) : null}
     </Box>
   );
 }
 
+const STATUS_LABELS: Record<ChefStationAgent["status"], string> = {
+  waiting: "Waiting",
+  busy: "Busy",
+  idle: "Idle",
+  unknown: "Status unknown",
+};
+
+const STATUS_COLORS: Record<ChefStationAgent["status"], string> = {
+  waiting: "warning",
+  busy: ACCENT,
+  idle: "text",
+  unknown: "text",
+};
+
+/** An active session in full: name, where it runs, what it is doing and what it was last asked. */
 function agentCard(ui: Ui, agent: ChefStationAgent, now: number) {
   const { Box, Text } = ui;
   const isBusy = agent.status === "busy";
-  const statusLabel = isBusy ? "Busy" : agent.status === "idle" ? "Idle" : "Status unknown";
+  const isUnderway = isBusy || agent.status === "waiting";
   const activity = agent.lastActivityAt === undefined ? "" : ` · ${ago(now - agent.lastActivityAt)}`;
 
   return (
-    <Box key={agent.sessionId} flexDirection="column" borderStyle="round" borderColor={isBusy ? ACCENT : "inactive"} paddingX={1}>
-      <Text bold color={isBusy ? ACCENT : "text"} wrap="truncate-end">
-        {`${isBusy ? "●" : "○"} ${agent.name}`}
+    <Box key={agent.sessionId} flexDirection="column">
+      <Text bold color={STATUS_COLORS[agent.status]} wrap="truncate-end">
+        {`${isUnderway ? "●" : "○"} ${agent.name}`}
       </Text>
       <Text dimColor wrap="truncate-end">
-        {`${statusLabel} · ${SURFACE_LABELS[agent.surface]} · ${agent.project} · pid ${agent.pid}`}
+        {`${STATUS_LABELS[agent.status]} · ${SURFACE_LABELS[agent.surface]} · ${agent.project} · pid ${agent.pid}`}
       </Text>
       {agent.title ? <Text wrap="truncate-end">{`Topic: ${agent.title}`}</Text> : null}
       {agent.lastAction ? (
@@ -524,5 +596,17 @@ function agentCard(ui: Ui, agent: ChefStationAgent, now: number) {
         </Text>
       ) : null}
     </Box>
+  );
+}
+
+/** An idle session on one line, so a long list of them stays short. */
+function idleRow(ui: Ui, agent: ChefStationAgent, now: number) {
+  const { Text } = ui;
+  const activity = agent.lastActivityAt === undefined ? "" : ` · ${ago(now - agent.lastActivityAt)}`;
+
+  return (
+    <Text key={agent.sessionId} dimColor wrap="truncate-end">
+      {`○ ${agent.name} · ${SURFACE_LABELS[agent.surface]} · ${agent.project}${activity}`}
+    </Text>
   );
 }

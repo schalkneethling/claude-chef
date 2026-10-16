@@ -1,10 +1,12 @@
 import { describe, expect, test } from "claude-code/testing";
 
 import {
+  ACTIVE_WINDOW_MS,
   describeToolUse,
   isSameProcess,
   parsePsOutput,
   parseRegistryEntry,
+  partitionAgents,
   projectFolderOf,
   sortAgents,
   summariseTranscriptTail,
@@ -61,6 +63,7 @@ describe("agents", () => {
     expect(entry.status).toBe("busy");
     expect(parseRegistryEntry("not json")).toBeUndefined();
     expect(parseRegistryEntry(JSON.stringify({ pid: "x" }))).toBeUndefined();
+    expect(parseRegistryEntry(registryJson({ status: "waiting" }))?.status).toBe("waiting");
     expect(parseRegistryEntry(registryJson({ status: "paused" }))?.status).toBe("unknown");
   });
 
@@ -122,13 +125,28 @@ describe("agents", () => {
     expect(toAgent(entry, { aiTitle: "vtex-shop-7e" }).title).toBeUndefined();
   });
 
-  test("busy sessions come first, then the most recently active", async () => {
+  test("waiting sessions come first, then busy ones, then the most recently active", async () => {
     const entry = fixtureEntry();
     const idleRecent = toAgent({ ...entry, sessionId: "a", status: "idle" }, { lastActivityAt: 900 });
     const idleOld = toAgent({ ...entry, sessionId: "b", status: "idle" }, { lastActivityAt: 100 });
     const busy = toAgent({ ...entry, sessionId: "c", status: "busy" }, { lastActivityAt: 50 });
+    const waiting = toAgent({ ...entry, sessionId: "d", status: "waiting" }, { lastActivityAt: 10 });
 
-    expect(sortAgents([idleOld, busy, idleRecent]).map((agent) => agent.sessionId)).toEqual(["c", "a", "b"]);
+    expect(sortAgents([idleOld, busy, idleRecent, waiting]).map((agent) => agent.sessionId)).toEqual(["d", "c", "a", "b"]);
+  });
+
+  test("busy and waiting sessions are active, and so is an idle one within the last fifteen minutes", async () => {
+    const entry = fixtureEntry();
+    const now = 10 * ACTIVE_WINDOW_MS;
+    const busy = toAgent({ ...entry, sessionId: "busy", status: "busy" }, {});
+    const waiting = toAgent({ ...entry, sessionId: "waiting", status: "waiting" }, { lastActivityAt: 0 });
+    const justIdle = toAgent({ ...entry, sessionId: "just-idle", status: "idle" }, { lastActivityAt: now - ACTIVE_WINDOW_MS });
+    const longIdle = toAgent({ ...entry, sessionId: "long-idle", status: "idle" }, { lastActivityAt: now - ACTIVE_WINDOW_MS - 1 });
+    const neverActive = toAgent({ ...entry, sessionId: "never", status: "unknown" }, {});
+
+    const { active, idle } = partitionAgents([busy, waiting, justIdle, longIdle, neverActive], now);
+    expect(active.map((agent) => agent.sessionId)).toEqual(["busy", "waiting", "just-idle"]);
+    expect(idle.map((agent) => agent.sessionId)).toEqual(["long-idle", "never"]);
   });
 
   test("an age reads as a short relative time", async () => {
