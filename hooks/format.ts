@@ -83,6 +83,28 @@ export function elapsed(ms: number): string {
   return `${minutes}:${pad(seconds % 60)}`;
 }
 
+/** How long ago something happened: "just now", "42s ago", "5m ago", "3h ago", "2d ago". */
+export function ago(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1_000));
+
+  if (seconds < 10) {
+    return "just now";
+  }
+
+  if (seconds < 60) {
+    return `${seconds}s ago`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+
+  if (minutes < 60) {
+    return `${minutes}m ago`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  return hours < 48 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
+}
+
 /** A horizontal meter `width` cells wide, split so each part can take its own color. */
 export function bar(percent: number, width: number): { filled: string; empty: string } {
   const cells = Math.round((Math.min(Math.max(percent, 0), 100) / 100) * width);

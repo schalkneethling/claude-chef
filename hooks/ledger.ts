@@ -120,7 +120,7 @@ function prune(ledger: ChefStationLedger, now: number): ChefStationLedger {
   };
 }
 
-/** One day as the tray shows it: what was recorded live plus what the last scan found. */
+/** One day as the sidebar shows it: what was recorded live plus what the last scan found. */
 function dayOf(ledger: ChefStationLedger, key: string): ChefStationDay | undefined {
   const live = ledger.days[key];
   const scanned = ledger.backfill?.days[key];
@@ -141,7 +141,7 @@ function addDays(first: ChefStationDay, second: ChefStationDay): ChefStationDay 
 }
 
 /**
- * The ledger the tray reads, put together from the turns each session stored
+ * The ledger the sidebar reads, put together from the turns each session stored
  * under a key of its own and the last scan of the transcripts. Each session
  * writing only its own key keeps two sessions from overwriting each other.
  */

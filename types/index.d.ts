@@ -1,7 +1,7 @@
 /**
- * The four stations of the tray, one per card of the overview.
+ * The six stations of the sidebar, one per button of its header.
  */
-export type ChefStationName = "usage" | "trend" | "breakdown" | "activity" | "context";
+export type ChefStationName = "usage" | "trend" | "breakdown" | "activity" | "context" | "agents";
 
 /** One row of the context window's breakdown, as /context lists it. */
 export type ChefStationContextCategory = {
@@ -47,14 +47,14 @@ export type ChefStationDay = {
 };
 
 /**
- * Every day the tray remembers, keyed `YYYY-MM-DD`; kept in `$.store` so it
+ * Every day the sidebar remembers, keyed `YYYY-MM-DD`; kept in `$.store` so it
  * outlives the session, and pruned to the last thirteen weeks.
  */
 export type ChefStationLedger = {
   version: 1;
-  /** What the tray recorded live, turn by turn. */
+  /** What the sidebar recorded live, turn by turn. */
   days: Record<string, ChefStationDay>;
-  /** Sessions the tray recorded live, with the last day it saw each, so a backfill skips them. */
+  /** Sessions the sidebar recorded live, with the last day it saw each, so a backfill skips them. */
   liveSessions?: Record<string, string>;
   /** What the last scan of Claude Code's transcripts found, for every other session. */
   backfill?: ChefStationBackfill;
@@ -111,7 +111,7 @@ export type ChefStationRateLimit = {
 /** How long a prompt-cache entry lives after the request that last read or wrote it. */
 export type ChefStationCacheTtl = "5m" | "1h";
 
-/** What the tray knows about the main conversation's prompt cache. */
+/** What the sidebar knows about the main conversation's prompt cache. */
 export type ChefStationCache = {
   /** When the main conversation's last model request started, in milliseconds since the epoch. */
   lastRequestAt?: number;
@@ -119,16 +119,54 @@ export type ChefStationCache = {
   ttl?: ChefStationCacheTtl;
 };
 
+/** Where a Claude Code session runs: the desktop app, a terminal, or in the background. */
+export type ChefStationAgentSurface = "desktop" | "terminal" | "background";
+
+/** What a session's own registry entry says it is doing. */
+export type ChefStationAgentStatus = "busy" | "idle" | "unknown";
+
+/** A session's latest assistant step: a tool call it made, or text it wrote. */
+export type ChefStationAgentAction = { kind: "tool" | "reply"; text: string };
+
+/** One live Claude Code session on this machine, as the Agents station lists it. */
+export type ChefStationAgent = {
+  pid: number;
+  sessionId: string;
+  name: string;
+  /** The conversation's title (one the person set, else Claude's), when it differs from `name`. */
+  title?: string;
+  surface: ChefStationAgentSurface;
+  /** The last folder of the session's working directory. */
+  project: string;
+  status: ChefStationAgentStatus;
+  /** The person's most recent prompt in that session. */
+  lastPrompt?: string;
+  lastAction?: ChefStationAgentAction;
+  /** When the session last wrote a prompt or a response, in milliseconds since the epoch. */
+  lastActivityAt?: number;
+  /** When the session began, in milliseconds since the epoch. */
+  startedAt?: number;
+};
+
+/** Every live session on this machine, as the last look at `~/.claude/sessions` found them. */
+export type ChefStationAgents = {
+  agents: ChefStationAgent[];
+  /** When the list was last refreshed, in milliseconds since the epoch; 0 before the first refresh. */
+  refreshedAt: number;
+  /** Why the last refresh failed; the agents are then the previous refresh's. */
+  error?: string;
+};
+
 declare module "claude-code" {
   interface PluginState {
     "chef-station": {
-      /** The station the tray shows. */
+      /** The station the sidebar shows. */
       station: ChefStationName;
-      /** The persisted ledger, mirrored here so the band redraws when it moves. */
+      /** The persisted ledger, mirrored here so the sidebar redraws when it moves. */
       ledger: ChefStationLedger;
       /** This session's live figures. */
       live: ChefStationLive | null;
-      /** The time the tray last ticked, so countdowns move without a turn. */
+      /** The time the sidebar last ticked, so countdowns move without a turn. */
       now: number;
       /** The session cost already written to the ledger, so no turn counts twice. */
       recordedUsd: number;
@@ -140,6 +178,8 @@ declare module "claude-code" {
       contextAction: ChefStationContextAction;
       /** Whether a scan of the transcripts is running, and what the last one said. */
       backfillStatus: { isRunning: boolean; message?: string };
+      /** Every live Claude Code session on this machine, refreshed while the Agents station shows. */
+      agents: ChefStationAgents;
     };
   }
 }
