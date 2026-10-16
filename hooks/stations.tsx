@@ -133,7 +133,7 @@ function summaryOf(name: ChefStationName, { ledger, live, now, context, agents }
       return streak > 0 ? `${streak}-day streak` : `${activeDays} active days`;
     }
     case "context": {
-      const percent = context ? (context.totalTokens / context.maxTokens) * 100 : live?.contextPercent;
+      const percent = context && context.maxTokens > 0 ? (context.totalTokens / context.maxTokens) * 100 : live?.contextPercent;
       return percent === undefined ? undefined : `${Math.round(percent)}% used`;
     }
     case "agents": {
@@ -599,14 +599,18 @@ function agentCard(ui: Ui, agent: ChefStationAgent, now: number) {
   );
 }
 
-/** An idle session on one line, so a long list of them stays short. */
+/**
+ * An idle session on one line, so a long list of them stays short. A session
+ * whose status could not be read folds here too, and its line says so.
+ */
 function idleRow(ui: Ui, agent: ChefStationAgent, now: number) {
   const { Text } = ui;
   const activity = agent.lastActivityAt === undefined ? "" : ` · ${ago(now - agent.lastActivityAt)}`;
+  const status = agent.status === "unknown" ? " · status unknown" : "";
 
   return (
     <Text key={agent.sessionId} dimColor wrap="truncate-end">
-      {`○ ${agent.name} · ${SURFACE_LABELS[agent.surface]} · ${agent.project}${activity}`}
+      {`○ ${agent.name} · ${SURFACE_LABELS[agent.surface]} · ${agent.project}${activity}${status}`}
     </Text>
   );
 }

@@ -56,6 +56,8 @@ const PANE_ID = "chef-station";
 const PANE_TITLE = "Chef Station";
 /** Other sessions start, finish and move on, so the Agents station looks again this often while it shows. */
 const AGENTS_TICK_MS = 5_000;
+/** While the Agents section is closed only its header's figure shows, so once a minute is enough. */
+const AGENTS_CLOSED_REFRESH_MS = 60_000;
 /** Enough of a transcript's end to hold a session's latest steps, title and prompt. */
 const AGENTS_TAIL_BYTES = 256 * 1024;
 
@@ -82,11 +84,12 @@ const isSidebarClosed = atom({ plugin: "chef-station", key: "isSidebarClosed" } 
 /**
  * What one loaded copy of the module keeps between refreshes of the Agents
  * station: each transcript's summary until the file changes, so an idle
- * session costs one stat per refresh, and whether a refresh is running.
+ * session costs one stat per refresh, and the refresh under way.
  */
 type AgentsRefresher = {
   transcripts: Map<string, { mtimeMs: number; summary: TranscriptSummary }>;
-  isRefreshing: boolean;
+  /** The refresh under way, which a caller joins instead of starting another. */
+  inFlight?: Promise<void>;
 };
 
 export const register: Register = (on, options) => {
@@ -96,14 +99,14 @@ export const register: Register = (on, options) => {
   // at a time, so neither reads the session cost the other is about to claim.
   let recording: Promise<unknown> = Promise.resolve();
   let turnTicker: Timer | undefined;
-  const agentsRefresher: AgentsRefresher = { transcripts: new Map(), isRefreshing: false };
+  const agentsRefresher: AgentsRefresher = { transcripts: new Map() };
 
   on("session.start", async ($, e, next) => {
     const result = await next(e);
     const usage = await $.session.usage();
     const root = await $.session.root();
     const model = modelName(await $.session.model());
-    const saved = await loadOpenSections($);
+    const saved = await restoreOpenSections($);
 
     await update($, live, () => ({
       project: basename(root),
@@ -148,10 +151,9 @@ export const register: Register = (on, options) => {
       }
     }
 
-    // After the command and the pane, so a slow `ps` never holds the session's start.
-    if (saved.includes("agents")) {
-      refreshAgents($, agentsRefresher).catch(() => undefined);
-    }
+    // After the command and the pane, so a slow `ps` never holds the session's start. Even a
+    // closed Agents section shows how many sessions are active in its header.
+    refreshAgents($, agentsRefresher).catch(() => undefined);
 
     // Fill in the history from Claude Code's transcripts once a day, in the background.
     const stored = await read($, ledger);
@@ -519,10 +521,11 @@ async function readTranscriptTail($: EngineInterface, path: string): Promise<str
 }
 
 /**
- * The open sections the person left, from the store; before 0.7.0 kept them,
- * the defaults plus the one station 0.6.0 and earlier showed.
+ * The open sections the person left, from the store. The first time 0.7.0
+ * runs there are none yet: the defaults then open, with the one station
+ * 0.6.0 and earlier showed, and that older key makes way for the new one.
  */
-async function loadOpenSections($: EngineInterface): Promise<ChefStationName[]> {
+async function restoreOpenSections($: EngineInterface): Promise<ChefStationName[]> {
   const stored = await $.store.get(OPEN_SECTIONS_KEY);
 
   if (Array.isArray(stored)) {
@@ -530,7 +533,11 @@ async function loadOpenSections($: EngineInterface): Promise<ChefStationName[]> 
   }
 
   const legacy = await $.store.get(LEGACY_STATION_KEY);
-  return isStation(legacy) && !DEFAULT_OPEN_SECTIONS.includes(legacy) ? [...DEFAULT_OPEN_SECTIONS, legacy] : [...DEFAULT_OPEN_SECTIONS];
+  const restored =
+    isStation(legacy) && !DEFAULT_OPEN_SECTIONS.includes(legacy) ? [...DEFAULT_OPEN_SECTIONS, legacy] : [...DEFAULT_OPEN_SECTIONS];
+  await $.store.set(OPEN_SECTIONS_KEY, restored);
+  await $.store.delete(LEGACY_STATION_KEY);
+  return restored;
 }
 
 /** Opens a station's section, or closes it when it is open. */
@@ -570,30 +577,43 @@ async function isSidebarShown($: EngineInterface): Promise<boolean> {
   return panes.some((pane) => pane.id === PANE_ID && pane.isPlaced && pane.isShown);
 }
 
-/** The timer's refresh: only while the Agents section is open and in view, so it costs nothing otherwise. */
+/**
+ * The timer's refresh, only while the sidebar is in view: every tick while
+ * the Agents section is open, and once a minute for its header's figure while
+ * it is closed.
+ */
 async function refreshAgentsWhileShown($: EngineInterface, refresher: AgentsRefresher) {
-  if ((await read($, openSections)).includes("agents") && (await isSidebarShown($))) {
+  if (!(await isSidebarShown($))) {
+    return;
+  }
+
+  const isOpen = (await read($, openSections)).includes("agents");
+  const { refreshedAt } = await read($, agents);
+
+  if (isOpen || (await $.clock.now()) - refreshedAt >= AGENTS_CLOSED_REFRESH_MS) {
     await refreshAgents($, refresher);
   }
 }
 
-async function refreshAgents($: EngineInterface, refresher: AgentsRefresher) {
-  // A slow `ps` or `tail` must not stack refreshes on top of each other.
-  if (refresher.isRefreshing) {
-    return;
-  }
+/**
+ * Looks at the live sessions again. A slow `ps` or `tail` must not stack
+ * refreshes on top of each other, so a call made while one runs waits for
+ * that one, whose result is at most a moment old.
+ */
+async function refreshAgents($: EngineInterface, refresher: AgentsRefresher): Promise<void> {
+  refresher.inFlight ??= (async () => {
+    try {
+      const found = await collectAgents($, refresher);
+      await update($, agents, () => found);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await update($, agents, (before) => ({ ...before, error: message }));
+    } finally {
+      refresher.inFlight = undefined;
+    }
+  })();
 
-  refresher.isRefreshing = true;
-
-  try {
-    const found = await collectAgents($, refresher);
-    await update($, agents, () => found);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    await update($, agents, (before) => ({ ...before, error: message }));
-  } finally {
-    refresher.isRefreshing = false;
-  }
+  return refresher.inFlight;
 }
 
 /** Every live session: the registry's entries whose process still runs, each with its transcript's summary. */

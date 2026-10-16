@@ -97,7 +97,8 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
   // The store as a plain object the test holds, so a test can read what the mod kept for the next session.
   on("store.get", ($, e) => ({ value: store[e.key] }));
   on("store.set", ($, e) => {
-    store[e.key] = e.value;
+    // A copy, as the engine keeps one: a value the real store would change cannot slip through.
+    store[e.key] = JSON.parse(JSON.stringify(e.value));
     return { value: undefined };
   });
   on("store.delete", ($, e) => {
@@ -344,14 +345,36 @@ describe("chef-station", () => {
     await ui.unmount();
   });
 
-  test("the station 0.6.0 showed starts open beside Usage", async ($, on) => {
-    kitchen(on, { station: "activity" });
+  test("the station 0.6.0 showed starts open beside Usage, and its key makes way for the new one", async ($, on) => {
+    const store: Record<string, unknown> = { station: "activity" };
+    kitchen(on, store);
     await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
     const ui = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
 
     expect(await ui.find({ type: "Button", text: "▾ Usage" })).toBeDefined();
     expect(await ui.find({ type: "Button", text: "▾ Activity" })).toBeDefined();
     expect(await ui.find({ type: "Button", text: "▸ Trend" })).toBeDefined();
+    expect(store).toMatchObject({ openSections: ["usage", "activity"] });
+    expect("station" in store).toBe(false);
+    await ui.unmount();
+  });
+
+  test("a session opens the sections the last one left open, all of them closed included", async ($, on) => {
+    kitchen(on, { openSections: [] });
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    const ui = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
+
+    expect(await ui.findAll({ type: "Button", text: /^▾ / })).toEqual([]);
+    expect(await ui.find({ type: "Button", text: "▸ Usage" })).toBeDefined();
+    await ui.unmount();
+  });
+
+  test("stored sections that are no station, or a stored value that is no list, are left out", async ($, on) => {
+    kitchen(on, { openSections: ["trend", "pantry"] });
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    const ui = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
+
+    expect((await ui.findAll({ type: "Button", text: /^▾ / })).map((found) => found.text)).toEqual(["▾ Trend"]);
     await ui.unmount();
   });
 
@@ -755,22 +778,32 @@ describe("chef-station", () => {
       });
     }
 
-    test("refreshes only while it shows in an open sidebar", async ($, on) => {
+    test("refreshes every five seconds while open, once a minute while closed, and not at all out of sight", async ($, on) => {
       const { figures, clock } = kitchen(on);
       registerSessions(on, figures);
       await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
-      await clock.advance(5_000);
-      expect(figures.psCalls).toBe(0);
+      // The start's refresh runs without holding the start up; let it finish.
+      await clock.advance(0);
+      // Once as the session starts, so the closed section's header has its figure.
+      expect(figures.psCalls).toBe(1);
+      const ui = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
+      expect(await ui.find({ type: "Text", text: "1 waiting · 2 active of 3" })).toBeDefined();
+      await ui.unmount();
 
-      await $.command.run({ command: "chef", args: "agents" } as any);
+      await clock.advance(55_000);
       expect(figures.psCalls).toBe(1);
       await clock.advance(5_000);
       expect(figures.psCalls).toBe(2);
 
+      await $.command.run({ command: "chef", args: "agents" } as any);
+      expect(figures.psCalls).toBe(3);
+      await clock.advance(5_000);
+      expect(figures.psCalls).toBe(4);
+
       // The person closes the sidebar: the list stops refreshing until it shows again.
       delete figures.panes["chef-station"];
-      await clock.advance(10_000);
-      expect(figures.psCalls).toBe(2);
+      await clock.advance(120_000);
+      expect(figures.psCalls).toBe(4);
     });
 
     test("with no sessions folder, the list is empty rather than an error", async ($, on) => {
