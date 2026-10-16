@@ -1,15 +1,25 @@
 import type { Elements, RenderChildren } from "claude-code";
 
-import type { ChefStationCache, ChefStationContext, ChefStationContextAction, ChefStationLedger, ChefStationLive, ChefStationName } from "../types";
+import type {
+  ChefStationAgent,
+  ChefStationAgents,
+  ChefStationCache,
+  ChefStationContext,
+  ChefStationContextAction,
+  ChefStationLedger,
+  ChefStationLive,
+  ChefStationName,
+} from "../types";
+import { SURFACE_LABELS } from "./agents";
 import { cacheLabel, cacheStatus } from "./cache";
 import { allocateCells, contextSegments } from "./context";
-import { bar, countdown, elapsed, money, short, verticalBars } from "./format";
+import { ago, bar, countdown, elapsed, money, short, verticalBars } from "./format";
 import { activity, hourly, ranked, today } from "./ledger";
 
 /** The elements a station draws with; the terminal's and the desktop's tables both have them. */
 export type Ui = Pick<Elements["terminal"], "Box" | "Text" | "Button">;
 
-export type TrayView = {
+export type SidebarView = {
   ui: Ui;
   station: ChefStationName;
   ledger: ChefStationLedger;
@@ -25,6 +35,8 @@ export type TrayView = {
   /** Whether Clear or Compact is running, whether Clear awaits confirmation, and what the last one said. */
   contextAction?: ChefStationContextAction;
   onContextAction?: (action: "compact" | "clear" | "confirm-clear" | "cancel-clear") => void;
+  /** Every live Claude Code session on this machine, for the Agents station. */
+  agents?: ChefStationAgents;
   isWorking: boolean;
   columns: number;
   onSelect: (station: ChefStationName) => void;
@@ -36,6 +48,7 @@ export const STATIONS: { name: ChefStationName; label: string; hotkey: string }[
   { name: "breakdown", label: "Breakdown", hotkey: "3" },
   { name: "activity", label: "Activity", hotkey: "4" },
   { name: "context", label: "Context", hotkey: "5" },
+  { name: "agents", label: "Agents", hotkey: "6" },
 ];
 
 const RATE_LIMIT_LABELS: Record<string, string> = {
@@ -50,7 +63,7 @@ const LABEL_WIDTH = 10;
 const ACCENT = "claude";
 const MUTED = "subtle";
 
-export function tray(view: TrayView) {
+export function sidebar(view: SidebarView) {
   const { Box } = view.ui;
 
   return (
@@ -61,7 +74,7 @@ export function tray(view: TrayView) {
   );
 }
 
-function header({ ui, station, plan, onSelect }: TrayView) {
+function header({ ui, station, plan, onSelect }: SidebarView) {
   const { Box, Text, Button } = ui;
 
   return (
@@ -84,8 +97,8 @@ function header({ ui, station, plan, onSelect }: TrayView) {
   );
 }
 
-/** The body of the station the tray shows. */
-function station(view: TrayView) {
+/** The body of the station the sidebar shows. */
+function station(view: SidebarView) {
   switch (view.station) {
     case "trend":
       return trend(view);
@@ -95,6 +108,8 @@ function station(view: TrayView) {
       return activityGrid(view);
     case "context":
       return contextWindow(view);
+    case "agents":
+      return agentsList(view);
     default:
       return usage(view);
   }
@@ -119,7 +134,7 @@ function row(ui: Ui, label: string, ...children: RenderChildren[]) {
  * The Usage station: the plan's rate-limit windows, today's spend, and the
  * Now row for this session, its prompt cache countdown included.
  */
-function usage({ ui, ledger, live, now, isWorking, columns, cache }: TrayView) {
+function usage({ ui, ledger, live, now, isWorking, columns, cache }: SidebarView) {
   const { Box, Text } = ui;
   const day = today(ledger, now);
   const cachePercent = day.inputTokens > 0 ? Math.round((day.cacheReadTokens / day.inputTokens) * 100) : 0;
@@ -187,7 +202,7 @@ function usage({ ui, ledger, live, now, isWorking, columns, cache }: TrayView) {
   );
 }
 
-function trend({ ui, ledger, now, columns }: TrayView) {
+function trend({ ui, ledger, now, columns }: SidebarView) {
   const { Box, Text } = ui;
   const hours = hourly(ledger, now);
   const total = hours.reduce((sum, usd) => sum + usd, 0);
@@ -228,7 +243,7 @@ function trend({ ui, ledger, now, columns }: TrayView) {
   );
 }
 
-function breakdown({ ui, ledger, now, columns }: TrayView) {
+function breakdown({ ui, ledger, now, columns }: SidebarView) {
   const { Box, Text } = ui;
   const day = today(ledger, now);
   const isSideBySide = columns >= 90;
@@ -272,7 +287,7 @@ function breakdown({ ui, ledger, now, columns }: TrayView) {
 const SHADES = ["░░", "▒▒", "▓▓", "██"];
 const WEEKDAYS = ["Mon", "", "Wed", "", "Fri", "", "Sun"];
 
-function activityGrid({ ui, ledger, now, columns, backfillStatus }: TrayView) {
+function activityGrid({ ui, ledger, now, columns, backfillStatus }: SidebarView) {
   const { Box, Text } = ui;
   const grid = activity(ledger, now);
   const top = Math.max(...grid.weeks.flat().map((tokens) => tokens ?? 0), 0);
@@ -328,7 +343,7 @@ function activityGrid({ ui, ledger, now, columns, backfillStatus }: TrayView) {
     ? "Reading your Claude Code history…"
     : ledger.backfill
       ? `History from ${ledger.backfill.files} transcripts, estimated at list prices. /chef backfill rescans it.`
-      : "Only turns since the tray was installed. /chef backfill reads your earlier history.";
+      : "Only turns since Chef Station was installed. /chef backfill reads your earlier history.";
 
   return (
     <Box flexDirection="column" marginTop={1}>
@@ -350,7 +365,7 @@ const LEGEND_ENTRY_WIDTH = 36;
  * The Context station: the window as one bar of categories, a legend that
  * names each color with its tokens and share, and the Compact and Clear buttons.
  */
-function contextWindow({ ui, context, columns, isWorking, contextAction, onContextAction }: TrayView) {
+function contextWindow({ ui, context, columns, isWorking, contextAction, onContextAction }: SidebarView) {
   const { Box, Text } = ui;
 
   if (!context) {
@@ -410,7 +425,7 @@ function contextActions(
   ui: Ui,
   isWorking: boolean,
   action: ChefStationContextAction | undefined,
-  onAction: TrayView["onContextAction"],
+  onAction: SidebarView["onContextAction"],
 ) {
   const { Box, Text, Button } = ui;
   const message = action?.message ? <Text dimColor>{action.message}</Text> : null;
@@ -451,6 +466,63 @@ function contextActions(
         <Button key="context-clear" label="Clear" hotkey="x" onPress={() => onAction?.("clear")} />
       </Box>
       {message}
+    </Box>
+  );
+}
+
+/**
+ * The Agents station: every live Claude Code session on this machine, busy
+ * ones first, with what each is doing and what it was last asked.
+ */
+function agentsList({ ui, agents, now }: SidebarView) {
+  const { Box, Text } = ui;
+
+  if (!agents || (agents.refreshedAt === 0 && !agents.error)) {
+    return (
+      <Box marginTop={1}>
+        <Text dimColor>Looking for sessions…</Text>
+      </Box>
+    );
+  }
+
+  const busyCount = agents.agents.filter((agent) => agent.status === "busy").length;
+  const sessionCount = `${agents.agents.length} ${agents.agents.length === 1 ? "session" : "sessions"}`;
+
+  return (
+    <Box flexDirection="column" marginTop={1} gap={1}>
+      {/* Before the first refresh that worked there is no list to describe, only the error. */}
+      {agents.refreshedAt === 0 ? null : (
+        <Text dimColor>{`${sessionCount} · ${busyCount} busy · updated ${ago(now - agents.refreshedAt)}`}</Text>
+      )}
+      {agents.error ? <Text color="error">{`Could not refresh: ${agents.error}`}</Text> : null}
+      {agents.agents.map((agent) => agentCard(ui, agent, now))}
+    </Box>
+  );
+}
+
+function agentCard(ui: Ui, agent: ChefStationAgent, now: number) {
+  const { Box, Text } = ui;
+  const isBusy = agent.status === "busy";
+  const statusLabel = isBusy ? "Busy" : agent.status === "idle" ? "Idle" : "Status unknown";
+  const activity = agent.lastActivityAt === undefined ? "" : ` · ${ago(now - agent.lastActivityAt)}`;
+
+  return (
+    <Box key={agent.sessionId} flexDirection="column" borderStyle="round" borderColor={isBusy ? ACCENT : "inactive"} paddingX={1}>
+      <Text bold color={isBusy ? ACCENT : "text"} wrap="truncate-end">
+        {`${isBusy ? "●" : "○"} ${agent.name}`}
+      </Text>
+      <Text dimColor wrap="truncate-end">
+        {`${statusLabel} · ${SURFACE_LABELS[agent.surface]} · ${agent.project} · pid ${agent.pid}`}
+      </Text>
+      {agent.title ? <Text wrap="truncate-end">{`Topic: ${agent.title}`}</Text> : null}
+      {agent.lastAction ? (
+        <Text wrap="truncate-end">{`${isBusy ? "Now" : "Last step"}: ${agent.lastAction.text}${activity}`}</Text>
+      ) : null}
+      {agent.lastPrompt ? (
+        <Text dimColor wrap="truncate-end">
+          {`Last asked: “${agent.lastPrompt}”`}
+        </Text>
+      ) : null}
     </Box>
   );
 }

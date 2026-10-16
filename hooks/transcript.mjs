@@ -115,7 +115,7 @@ export function costOf(entry) {
  *
  * @param {{ since: number, excludeSessions?: Iterable<string> }} options
  *   `since`: responses before this moment are left out; `excludeSessions`:
- *   sessions the tray already recorded live, so they are not counted twice
+ *   sessions the sidebar already recorded live, so they are not counted twice
  */
 export function createTally({ since, excludeSessions = [] }) {
   const excluded = new Set(excludeSessions);

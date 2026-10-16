@@ -61,7 +61,7 @@ export function cacheTtlFromTranscript(text: string): ChefStationCacheTtl | unde
  * Whether the main conversation's prompt cache is likely still warm, and for
  * how long. An entry lives for its lifetime from the start of the last request
  * that read or wrote it; with no lifetime known, the shorter five minutes is
- * assumed, so the tray never calls a cold cache warm.
+ * assumed, so the sidebar never calls a cold cache warm.
  */
 export function cacheStatus(cache: ChefStationCache, now: number): CacheStatus {
   if (cache.lastRequestAt === undefined) {

@@ -2,6 +2,7 @@ import { atom, read, update } from "claude-code";
 import type { EngineInterface, Register, SessionMeasureInput, SessionUsage, Timer } from "claude-code";
 
 import type {
+  ChefStationAgents,
   ChefStationBackfill,
   ChefStationCache,
   ChefStationContext,
@@ -10,15 +11,26 @@ import type {
   ChefStationLive,
   ChefStationName,
 } from "../types";
+import {
+  isSameProcess,
+  parsePsOutput,
+  parseRegistryEntry,
+  projectFolderOf,
+  type RegistryEntry,
+  sortAgents,
+  summariseTranscriptTail,
+  toAgent,
+  type TranscriptSummary,
+} from "./agents";
 import { cacheTtlFromTranscript } from "./cache";
 import { describeBackfill, MAX_READ_BYTES, SCAN_TIMEOUT_MS, type Tallied, toBackfill } from "./backfill";
 import { modelName, short } from "./format";
 import { backfillSince, composeLedger, dayKey, emptyLedger, isStale, recordTurn } from "./ledger";
-import { STATIONS, tray } from "./stations";
+import { sidebar, STATIONS } from "./stations";
 import { addTranscript, createTally } from "./transcript.mjs";
 
 /**
- * Each session stores its own turns under `turns:<session id>`, and the tray
+ * Each session stores its own turns under `turns:<session id>`, and the sidebar
  * adds every session's up when it reads them, so two sessions never write
  * the same key. `$.store` has no conditional write to make a shared key safe.
  */
@@ -34,8 +46,15 @@ const TICK_MS = 60_000;
 const TURN_TICK_MS = 1_000;
 /** The daily scan waits until the session has settled in. */
 const SCAN_DELAY_MS = 5_000;
+/** The sidebar pane the stations draw in. */
+const PANE_ID = "chef-station";
+const PANE_TITLE = "Chef Station";
+/** Other sessions start, finish and move on, so the Agents station looks again this often while it shows. */
+const AGENTS_TICK_MS = 5_000;
+/** Enough of a transcript's end to hold a session's latest steps, title and prompt. */
+const AGENTS_TAIL_BYTES = 256 * 1024;
 
-// Held by the host, so the tray survives a hot reload of this file.
+// Held by the host, so the sidebar survives a hot reload of this file.
 const station = atom({ plugin: "chef-station", key: "station" } as const, "usage" as ChefStationName);
 const ledger = atom({ plugin: "chef-station", key: "ledger" } as const, emptyLedger());
 const live = atom({ plugin: "chef-station", key: "live" } as const, null as ChefStationLive | null);
@@ -51,6 +70,18 @@ const backfillStatus = atom({ plugin: "chef-station", key: "backfillStatus" } as
   isRunning: boolean;
   message?: string;
 });
+const agents = atom({ plugin: "chef-station", key: "agents" } as const, { agents: [], refreshedAt: 0 } as ChefStationAgents);
+const isSidebarClosed = atom({ plugin: "chef-station", key: "isSidebarClosed" } as const, false);
+
+/**
+ * What one loaded copy of the module keeps between refreshes of the Agents
+ * station: each transcript's summary until the file changes, so an idle
+ * session costs one stat per refresh, and whether a refresh is running.
+ */
+type AgentsRefresher = {
+  transcripts: Map<string, { mtimeMs: number; summary: TranscriptSummary }>;
+  isRefreshing: boolean;
+};
 
 export const register: Register = (on, options) => {
   const plan = typeof options.plan === "string" && options.plan.trim() !== "" ? options.plan.trim() : undefined;
@@ -59,6 +90,7 @@ export const register: Register = (on, options) => {
   // at a time, so neither reads the session cost the other is about to claim.
   let recording: Promise<unknown> = Promise.resolve();
   let turnTicker: Timer | undefined;
+  const agentsRefresher: AgentsRefresher = { transcripts: new Map(), isRefreshing: false };
 
   on("session.start", async ($, e, next) => {
     const result = await next(e);
@@ -76,7 +108,7 @@ export const register: Register = (on, options) => {
       contextPercent: usage.context.percent,
       rateLimits: [...usage.rateLimits],
     }));
-    // Whatever the session cost before this load is already in the ledger, or predates the tray.
+    // Whatever the session cost before this load is already in the ledger, or predates Chef Station.
     await update($, recordedUsd, () => usage.cost?.usd ?? 0);
     await tick($);
     await refreshContext($).catch(() => undefined);
@@ -87,7 +119,7 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: "chef",
-      description: "Show a station of the chef tray, or rescan your Claude Code history with backfill.",
+      description: "Show a station of the Chef Station sidebar, or rescan your Claude Code history with backfill.",
       argumentHint: "[usage|trend|breakdown|activity|context|backfill]",
       immediate: true,
     });
@@ -95,6 +127,27 @@ export const register: Register = (on, options) => {
     $.clock.every(TICK_MS, () => {
       tick($).catch(() => undefined);
     });
+
+    $.clock.every(AGENTS_TICK_MS, () => {
+      refreshAgentsWhileShown($, agentsRefresher).catch(() => undefined);
+    });
+
+    // The stations are always at hand, as the tray above the prompt kept them, unless the
+    // person closed the sidebar earlier in this session (this start can be a reload's).
+    // A session with nowhere to draw (a headless run) refuses the pane, which changes nothing.
+    if (!(await read($, isSidebarClosed))) {
+      const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE }).catch(() => undefined);
+
+      // A terminal places a pane nobody asked for only from 144 columns, so say how to open it.
+      if (opened && !opened.isPlaced) {
+        $.ui.toast("Chef Station waits for a wider terminal. Type /chef to open it now.");
+      }
+    }
+
+    // After the command and the pane, so a slow `ps` never holds the session's start.
+    if (saved === "agents") {
+      refreshAgents($, agentsRefresher).catch(() => undefined);
+    }
 
     // Fill in the history from Claude Code's transcripts once a day, in the background.
     const stored = await read($, ledger);
@@ -239,6 +292,18 @@ export const register: Register = (on, options) => {
     return result;
   });
 
+  // The person closing the sidebar keeps it closed through reloads, until /chef. Remembering
+  // that must never keep a pane open, so the close goes ahead even if this hook fails.
+  on("ui.close", async ($, e, next) => {
+    const result = await next(e);
+
+    if (e.id === PANE_ID && e.origin.kind === "person") {
+      await update($, isSidebarClosed, () => true);
+    }
+
+    return result;
+  }).catch(($, e, next) => next(e));
+
   on("command.run", { command: "chef" }, async ($, e) => {
     const asked = e.args.trim().toLowerCase();
 
@@ -246,41 +311,42 @@ export const register: Register = (on, options) => {
       return { text: await runBackfill($) };
     }
 
-    if (asked === "") {
-      const current = await read($, station);
-      const index = STATIONS.findIndex((entry) => entry.name === current);
-      const following = STATIONS[(index + 1) % STATIONS.length]!.name;
-      await select($, following);
-      return { text: `Chef tray: ${following}` };
-    }
-
-    if (!isStation(asked)) {
+    if (!isStation(asked) && asked !== "") {
       return {
         text: `No station called "${asked}". Try ${STATIONS.map((entry) => entry.name).join(", ")}, or backfill to rescan your history.`,
       };
     }
 
-    await select($, asked);
-    return { text: `Chef tray: ${asked}` };
-  });
+    // A bare /chef brings back a sidebar that is closed or out of sight on the station it
+    // showed, and cycles once the sidebar is in view.
+    const wasShown = await isSidebarShown($);
+    await update($, isSidebarClosed, () => false);
+    // Opened from the person's command, so the pane is placed at any width. Another plugin
+    // may refuse it; the station still changes, for when the sidebar next opens.
+    await $.ui.open({ id: PANE_ID, title: PANE_TITLE }).catch(() => undefined);
 
-  on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
-    if (e.props.hasSurvey) {
-      return next(e);
+    if (asked === "" && !wasShown) {
+      return { text: `Chef Station: ${await read($, station)}` };
     }
 
+    const chosen = asked === "" ? nextStation(await read($, station)) : asked;
+    await select($, chosen, agentsRefresher);
+    return { text: `Chef Station: ${chosen}` };
+  });
+
+  on("ui.render", { component: "Pane", requestId: PANE_ID }, async ($, e) => {
+    const ui = $.ui.resolve(e);
     const currentLive = await read($, live);
     const currentLedger = await read($, ledger);
     const currentNow = await read($, now);
 
-    // Nothing to show before the session has started.
+    // A pane always draws something; the figures arrive once the session has started.
     if (currentLive === null) {
-      return next(e);
+      const { Text } = ui;
+      return <Text dimColor>Getting the kitchen ready…</Text>;
     }
 
-    const ui = $.ui.resolve(e);
-
-    return tray({
+    return sidebar({
       ui,
       station: await read($, station),
       ledger: currentLedger,
@@ -292,15 +358,19 @@ export const register: Register = (on, options) => {
       context: await read($, contextBreakdown),
       contextAction: await read($, contextAction),
       onContextAction: (action) => void runContextAction($, action),
-      isWorking: e.props.isWorking,
+      agents: await read($, agents),
+      // The pane is told nothing about turns, so the running turn's start says Claude is working.
+      isWorking: currentLive.turnStartedAt !== undefined,
       columns: e.props.bodyColumns,
-      onSelect: (name) => void select($, name),
+      onSelect: (name) => {
+        select($, name, agentsRefresher).catch(() => undefined);
+      },
     });
   });
 };
 
 /**
- * Scans Claude Code's transcripts for every session the tray did not record
+ * Scans Claude Code's transcripts for every session the sidebar did not record
  * live and stores the result beside the live turns. Returns a line saying how
  * it went, for `/chef backfill` and the activity station.
  */
@@ -338,15 +408,20 @@ async function runBackfill($: EngineInterface): Promise<string> {
 
 type ScanOptions = { since: number; excludeSessions: string[] };
 
-async function projectsDirectory($: EngineInterface): Promise<string> {
+/** Where Claude Code keeps its state: `$CLAUDE_CONFIG_DIR`, else `~/.claude`. */
+async function configDirectory($: EngineInterface): Promise<string> {
   const configured = await $.env.get("CLAUDE_CONFIG_DIR");
 
   if (configured) {
-    return `${configured}/projects`;
+    return configured;
   }
 
   const home = (await $.env.get("HOME")) ?? (await $.env.get("USERPROFILE")) ?? "";
-  return `${home}/.claude/projects`;
+  return `${home}/.claude`;
+}
+
+async function projectsDirectory($: EngineInterface): Promise<string> {
+  return `${await configDirectory($)}/projects`;
 }
 
 /** The Node helper streams transcripts of any size; a mod may read 4 MiB at most. */
@@ -439,14 +514,142 @@ async function readTranscriptTail($: EngineInterface, path: string): Promise<str
   }
 }
 
-/** Shows a station, remembers it for the next session, and measures the context when that station opens. */
-async function select($: EngineInterface, name: ChefStationName) {
+/**
+ * Shows a station, remembers it for the next session, and fills in what that
+ * station needs: a measurement of the context, or the list of live sessions.
+ */
+async function select($: EngineInterface, name: ChefStationName, refresher: AgentsRefresher) {
   await update($, station, () => name);
   await $.store.set(STATION_KEY, name);
 
   if (name === "context") {
     await refreshContext($).catch(() => undefined);
   }
+
+  if (name === "agents") {
+    await refreshAgents($, refresher);
+  }
+}
+
+function nextStation(current: ChefStationName): ChefStationName {
+  const index = STATIONS.findIndex((entry) => entry.name === current);
+  return STATIONS[(index + 1) % STATIONS.length]!.name;
+}
+
+/** Whether the person can see the sidebar: open, placed (not waiting for a wider terminal) and not behind another tab. */
+async function isSidebarShown($: EngineInterface): Promise<boolean> {
+  const panes = await $.ui.panes();
+  return panes.some((pane) => pane.id === PANE_ID && pane.isPlaced && pane.isShown);
+}
+
+/** The timer's refresh: only while the Agents station is in view, so it costs nothing otherwise. */
+async function refreshAgentsWhileShown($: EngineInterface, refresher: AgentsRefresher) {
+  if ((await read($, station)) === "agents" && (await isSidebarShown($))) {
+    await refreshAgents($, refresher);
+  }
+}
+
+async function refreshAgents($: EngineInterface, refresher: AgentsRefresher) {
+  // A slow `ps` or `tail` must not stack refreshes on top of each other.
+  if (refresher.isRefreshing) {
+    return;
+  }
+
+  refresher.isRefreshing = true;
+
+  try {
+    const found = await collectAgents($, refresher);
+    await update($, agents, () => found);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await update($, agents, (before) => ({ ...before, error: message }));
+  } finally {
+    refresher.isRefreshing = false;
+  }
+}
+
+/** Every live session: the registry's entries whose process still runs, each with its transcript's summary. */
+async function collectAgents($: EngineInterface, refresher: AgentsRefresher): Promise<ChefStationAgents> {
+  const config = await configDirectory($);
+  const live = await liveEntriesOf($, await readRegistry($, `${config}/sessions`));
+  const found = await Promise.all(
+    live.map(async (entry) => toAgent(entry, await summariseSession($, `${config}/projects`, entry, refresher))),
+  );
+  const liveIds = new Set(live.map((entry) => entry.sessionId));
+
+  for (const sessionId of refresher.transcripts.keys()) {
+    if (!liveIds.has(sessionId)) {
+      refresher.transcripts.delete(sessionId);
+    }
+  }
+
+  return { agents: sortAgents(found), refreshedAt: await $.clock.now() };
+}
+
+/** Every running Claude Code process writes `<pid>.json` into the sessions folder; one that does not parse is left out. */
+async function readRegistry($: EngineInterface, directory: string): Promise<RegistryEntry[]> {
+  // No sessions folder means no session has registered yet: an empty list, not an error.
+  const files = await $.fs.list(directory).catch(() => []);
+  const entries = await Promise.all(
+    files
+      .filter((file) => file.kind === "file" && file.name.endsWith(".json"))
+      .map((file) =>
+        $.fs
+          .read(`${directory}/${file.name}`)
+          .then(parseRegistryEntry)
+          .catch(() => undefined),
+      ),
+  );
+
+  return entries.filter((entry): entry is RegistryEntry => entry !== undefined);
+}
+
+/** The entries whose process still runs and is still the one that wrote the entry. */
+async function liveEntriesOf($: EngineInterface, entries: RegistryEntry[]): Promise<RegistryEntry[]> {
+  if (entries.length === 0) {
+    return [];
+  }
+
+  // The registry records `procStart` in UTC, so ps must print UTC for the two to match.
+  // ps prints only the pids that still run, so its exit code says nothing the output does not.
+  const { stdout } = await $.process.run(["ps", "-o", "pid=,lstart=", "-p", entries.map((entry) => entry.pid).join(",")], {
+    env: { TZ: "UTC" },
+  });
+  const started = parsePsOutput(stdout);
+
+  return entries.filter((entry) => isSameProcess(entry, started));
+}
+
+/** One unreadable transcript leaves its card without details rather than failing the whole list. */
+async function summariseSession(
+  $: EngineInterface,
+  projects: string,
+  entry: RegistryEntry,
+  refresher: AgentsRefresher,
+): Promise<TranscriptSummary> {
+  const path = `${projects}/${projectFolderOf(entry.cwd)}/${entry.sessionId}.jsonl`;
+  const stat = await $.fs.stat(path).catch(() => undefined);
+
+  if (stat === undefined) {
+    return {};
+  }
+
+  const cached = refresher.transcripts.get(entry.sessionId);
+
+  if (cached?.mtimeMs === stat.mtimeMs) {
+    return cached.summary;
+  }
+
+  // Transcripts grow past the 4 MiB a mod may read, so only the end is read, through `tail`.
+  const tail = await $.process.run(["tail", "-c", String(AGENTS_TAIL_BYTES), path]).catch(() => undefined);
+
+  if (tail === undefined || tail.exitCode !== 0) {
+    return {};
+  }
+
+  const summary = summariseTranscriptTail(tail.stdout);
+  refresher.transcripts.set(entry.sessionId, { mtimeMs: stat.mtimeMs, summary });
+  return summary;
 }
 
 /** What the Context station's Compact and Clear buttons, and Clear's confirmation, do. */
@@ -521,7 +724,7 @@ async function refreshContext($: EngineInterface) {
   await update($, contextBreakdown, () => measured);
 }
 
-/** Moves the tray's clock on and picks up what other sessions have recorded. */
+/** Moves the sidebar's clock on and picks up what other sessions have recorded. */
 async function tick($: EngineInterface) {
   const at = await $.clock.now();
   await update($, now, () => at);
