@@ -66,8 +66,10 @@ const RATE_LIMIT_LABELS: Record<string, string> = {
 const LABEL_WIDTH = 10;
 const ACCENT = "claude";
 const MUTED = "subtle";
-/** What a section's frame takes from the width: its border and its padding, a cell each side. */
-const SECTION_FRAME_COLUMNS = 4;
+/** Cells of padding inside a section's border, each side. */
+const SECTION_PADDING = 2;
+/** What a section's frame takes from the width: its border and its padding, each side. */
+const SECTION_FRAME_COLUMNS = 2 * (1 + SECTION_PADDING);
 
 export function sidebar(view: SidebarView) {
   const { Box, Text } = view.ui;
@@ -98,7 +100,7 @@ function section(view: SidebarView, entry: (typeof STATIONS)[number]) {
   const body = { ...view, columns: Math.max(10, view.columns - SECTION_FRAME_COLUMNS) };
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="inactive" paddingX={1} marginTop={1}>
+    <Box flexDirection="column" borderStyle="round" borderColor="inactive" paddingX={SECTION_PADDING} marginTop={1}>
       <Box flexDirection="row" justifyContent="space-between" columnGap={1}>
         <Button key={`section-${entry.name}`} plain hotkey={entry.hotkey} onPress={() => view.onToggle(entry.name)}>
           {`${isOpen ? "▾" : "▸"} ${entry.label}`}
@@ -213,18 +215,22 @@ function usage({ ui, ledger, live, now, isWorking, columns, cache }: SidebarView
     <Text dimColor>{` API value · ${short(day.tokens)} tokens · ${cachePercent}% from cache`}</Text>,
   );
 
+  const cacheText = cacheLabel(cacheStatus(cache ?? {}, now));
+  const separator = cacheText ? " · " : "";
+
   // The running turn's stopwatch, or how long the last turn took once it is done.
   const turnTime =
     live?.turnStartedAt !== undefined ? (
-      <Text color={ACCENT} bold>{`  ${elapsed(now - live.turnStartedAt)}`}</Text>
+      <Text color={ACCENT} bold>{`${separator}${elapsed(now - live.turnStartedAt)}`}</Text>
     ) : live?.lastTurnMs !== undefined ? (
-      <Text dimColor>{`  last turn ${elapsed(live.lastTurnMs)}`}</Text>
+      <Text dimColor wrap="truncate-end">{`${separator}last turn ${elapsed(live.lastTurnMs)}`}</Text>
     ) : null;
 
-  const cacheText = cacheLabel(cacheStatus(cache ?? {}, now));
-
-  const nowRow = live
-    ? row(
+  // Two lines, the session's figures and then its cache and turn timing, so neither
+  // squeezes the other out of a narrow sidebar.
+  const nowRow = live ? (
+    <Box flexDirection="column">
+      {row(
         ui,
         "Now",
         <Text color={isWorking ? ACCENT : MUTED}>● </Text>,
@@ -239,10 +245,21 @@ function usage({ ui, ledger, live, now, isWorking, columns, cache }: SidebarView
             live.contextPercent === undefined ? "" : ` · context ${Math.round(live.contextPercent)}%`,
           ].join("")}
         </Text>,
-        cacheText ? <Text dimColor>{` · ${cacheText}`}</Text> : null,
-        turnTime,
-      )
-    : null;
+      )}
+      {cacheText || turnTime
+        ? row(
+            ui,
+            "",
+            cacheText ? (
+              <Text dimColor wrap="truncate-end">
+                {cacheText}
+              </Text>
+            ) : null,
+            turnTime,
+          )
+        : null}
+    </Box>
+  ) : null;
 
   return (
     <Box flexDirection="column" marginTop={1}>

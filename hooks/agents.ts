@@ -304,8 +304,8 @@ function describeAssistantStep(blocks: JsonObject[]): ChefStationAgentAction | u
     .map((block) => (block.type === "text" ? stringOf(block.text) : undefined))
     .filter((part): part is string => part !== undefined)
     .join(" ");
-  // Bold and code markers read as noise on a one-line card; the words stay.
-  const plain = text.replace(/\*\*|`/g, "");
+  // Bold and code markers, and a link's address, read as noise on a one-line card; the words stay.
+  const plain = text.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\*\*|`/g, "");
 
   return plain.length > 0 ? { kind: "reply", text: truncate(plain, 160) } : undefined;
 }

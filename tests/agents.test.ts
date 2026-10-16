@@ -109,14 +109,17 @@ describe("agents", () => {
     expect(summariseTranscriptTail(tail).lastPrompt).toBe("Fix the flaky test");
   });
 
-  test("a reply reads as a reply, without Markdown bold or code markers", async () => {
+  test("a reply reads as a reply, without Markdown bold or code markers, and links keep only their text", async () => {
     const reply = JSON.stringify({
       type: "assistant",
       timestamp: "2026-10-16T12:02:00Z",
-      message: { content: [{ type: "text", text: "All **tests** pass in `agents.ts` now." }] },
+      message: { content: [{ type: "text", text: "All **tests** pass in `agents.ts`; see [the PR](https://github.com/o/r/pull/9) and [notes](#local_1)." }] },
     });
 
-    expect(summariseTranscriptTail(`${TAIL}\n${reply}`).lastAction).toEqual({ kind: "reply", text: "All tests pass in agents.ts now." });
+    expect(summariseTranscriptTail(`${TAIL}\n${reply}`).lastAction).toEqual({
+      kind: "reply",
+      text: "All tests pass in agents.ts; see the PR and notes.",
+    });
   });
 
   test("a title the person set wins over the generated one, and one equal to the name is left out", async () => {

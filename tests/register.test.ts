@@ -554,11 +554,12 @@ describe("chef-station", () => {
     // Until a turn ends and the transcript says otherwise, the shorter five minutes is assumed.
     await drain($.turn.step({ turnId: "t1", index: 0, model: "claude-opus-5-5", messageCount: 1 } as any));
     await clock.advance(60_000);
-    expect(await ui.find({ type: "Text", text: "cache warm · ~4m left" })).toBeDefined();
+    // On a line of its own, so it never squeezes the session's figures in a narrow sidebar.
+    expect(await ui.find({ type: "Text", text: /^cache warm · ~4m left$/ })).toBeDefined();
 
     await $.classic.Stop({ transcript_path: transcript, stop_hook_active: false } as any);
     await clock.advance(17 * 60_000);
-    expect(await ui.find({ type: "Text", text: "cache warm · ~42m left" })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /^cache warm · ~42m left$/ })).toBeDefined();
 
     // A subagent's request uses its own cache, so the main conversation's countdown keeps running.
     await drain($.turn.step({ turnId: "t2", index: 0, model: "claude-haiku-4-5", messageCount: 1, agentId: "sub" } as any));
