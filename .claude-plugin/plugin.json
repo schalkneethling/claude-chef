@@ -1,6 +1,6 @@
 {
   "name": "chef-station",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "A Chef Station sidebar of sections that open and close: plan limits, today's spend, the hourly trend, models and projects, thirteen weeks of activity, the context window, and every Claude Code session running on this machine.",
   "author": { "name": "Schalk Neethling" },
   "types": "./types/index.d.ts",

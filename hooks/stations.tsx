@@ -184,8 +184,26 @@ function row(ui: Ui, label: string, ...children: RenderChildren[]) {
 }
 
 /**
+ * A figure in a box of one width, aligned to the box's end. Columns of numbers
+ * line up this way in any font; padding with spaces only does in a monospaced one.
+ */
+function figure(ui: Ui, width: number, children: RenderChildren, options: { isBold?: boolean; isDim?: boolean } = {}) {
+  const { Box, Text } = ui;
+
+  return (
+    <Box width={width} flexShrink={0} justifyContent="flex-end">
+      <Text bold={options.isBold} dimColor={options.isDim}>
+        {children}
+      </Text>
+    </Box>
+  );
+}
+
+/**
  * The Usage station: the plan's rate-limit windows, today's spend, and the
- * Now row for this session, its prompt cache countdown included.
+ * Now row for this session, its prompt cache countdown included. Every row
+ * says one thing on one line that truncates, so a narrow sidebar clips a
+ * line rather than wrapping it over the next.
  */
 function usage({ ui, ledger, live, now, isWorking, columns, cache }: SidebarView) {
   const { Box, Text } = ui;
@@ -203,16 +221,19 @@ function usage({ ui, ledger, live, now, isWorking, columns, cache }: SidebarView
       RATE_LIMIT_LABELS[limit.kind] ?? limit.kind,
       <Text color={color}>{meter.filled}</Text>,
       <Text color={MUTED}>{meter.empty}</Text>,
-      <Text bold>{` ${Math.round(limit.percentUsed)}%`.padStart(5)}</Text>,
-      resetsIn === undefined || Number.isNaN(resetsIn) ? null : <Text dimColor>{`  ↻ ${countdown(resetsIn)}`}</Text>,
+      figure(ui, 5, ` ${Math.round(limit.percentUsed)}%`, { isBold: true }),
+      resetsIn === undefined || Number.isNaN(resetsIn) ? null : (
+        <Text dimColor wrap="truncate-end">{` ↻ ${countdown(resetsIn)}`}</Text>
+      ),
     );
   });
 
-  const todayRow = row(
-    ui,
-    "Today",
-    <Text bold>{money(day.usd)}</Text>,
-    <Text dimColor>{` API value · ${short(day.tokens)} tokens · ${cachePercent}% from cache`}</Text>,
+  // Today's cost, then what it was made of on a line of its own.
+  const todayRows = (
+    <Box flexDirection="column" marginTop={1}>
+      {row(ui, "Today", <Text bold>{money(day.usd)}</Text>, <Text dimColor>{" API value"}</Text>)}
+      {row(ui, "", <Text dimColor wrap="truncate-end">{`${short(day.tokens)} tokens · ${cachePercent}% from cache`}</Text>)}
+    </Box>
   );
 
   const cacheText = cacheLabel(cacheStatus(cache ?? {}, now));
@@ -226,10 +247,9 @@ function usage({ ui, ledger, live, now, isWorking, columns, cache }: SidebarView
       <Text dimColor wrap="truncate-end">{`${separator}last turn ${elapsed(live.lastTurnMs)}`}</Text>
     ) : null;
 
-  // Two lines, the session's figures and then its cache and turn timing, so neither
-  // squeezes the other out of a narrow sidebar.
+  // Three lines: which session, its figures, then its cache and turn timing, so none squeezes another out.
   const nowRow = live ? (
-    <Box flexDirection="column">
+    <Box flexDirection="column" marginTop={1}>
       {row(
         ui,
         "Now",
@@ -237,13 +257,19 @@ function usage({ ui, ledger, live, now, isWorking, columns, cache }: SidebarView
         <Text bold wrap="truncate-end">
           {live.project}
         </Text>,
+      )}
+      {row(
+        ui,
+        "",
         <Text dimColor wrap="truncate-end">
           {[
-            ` · ${live.model}`,
-            ` · ${short(live.outputTokens)} written`,
-            ` · ${money(live.usd)}`,
-            live.contextPercent === undefined ? "" : ` · context ${Math.round(live.contextPercent)}%`,
-          ].join("")}
+            live.model,
+            `${short(live.outputTokens)} written`,
+            money(live.usd),
+            live.contextPercent === undefined ? "" : `context ${Math.round(live.contextPercent)}%`,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
         </Text>,
       )}
       {cacheText || turnTime
@@ -264,7 +290,7 @@ function usage({ ui, ledger, live, now, isWorking, columns, cache }: SidebarView
   return (
     <Box flexDirection="column" marginTop={1}>
       {limits}
-      {todayRow}
+      {todayRows}
       {nowRow}
     </Box>
   );
@@ -288,16 +314,20 @@ function trend({ ui, ledger, now, columns }: SidebarView) {
       <Box flexDirection="row">
         {[...line].map((glyph, hour) => {
           const isEmptyBaseline = isBaseline && glyph === " " && hour <= currentHour;
-          const cell = (isEmptyBaseline ? "▁" : glyph).repeat(barWidth) + " ".repeat(gap);
+          const cell = (isEmptyBaseline ? "▁" : glyph).repeat(barWidth);
 
-          return <Text color={isEmptyBaseline ? MUTED : ACCENT}>{cell}</Text>;
+          // One box per hour, so an empty hour is as wide as a full one in any font.
+          return (
+            <Box width={step} flexShrink={0}>
+              <Text color={isEmptyBaseline ? MUTED : ACCENT}>{cell}</Text>
+            </Box>
+          );
         })}
       </Box>
     );
   });
 
   const axisWidth = 24 * step;
-  const axis = "00".padEnd(12 * step) + "12".padEnd(axisWidth - 12 * step - 2) + "23";
 
   return (
     <Box flexDirection="column" marginTop={1}>
@@ -306,21 +336,35 @@ function trend({ ui, ledger, now, columns }: SidebarView) {
         <Text dimColor>{`Today · ${money(total)}`}</Text>
       </Box>
       {barRows}
-      <Text dimColor>{axis}</Text>
+      <Box flexDirection="row" width={axisWidth}>
+        <Box width={12 * step} flexShrink={0}>
+          <Text dimColor>00</Text>
+        </Box>
+        <Box width={11 * step} flexShrink={0}>
+          <Text dimColor>12</Text>
+        </Box>
+        <Box width={step} flexShrink={0} justifyContent="flex-end">
+          <Text dimColor>23</Text>
+        </Box>
+      </Box>
     </Box>
   );
 }
+
+/** Cells each of Breakdown's columns takes, so every row's name, meter and amount line up. */
+const NAME_WIDTH = 18;
+const AMOUNT_WIDTH = 8;
 
 function breakdown({ ui, ledger, now, columns }: SidebarView) {
   const { Box, Text } = ui;
   const day = today(ledger, now);
   const isSideBySide = columns >= 90;
   const listWidth = isSideBySide ? Math.floor((columns - 2) / 2) : columns;
+  const meterWidth = Math.min(16, Math.max(6, listWidth - NAME_WIDTH - AMOUNT_WIDTH - 2));
 
   const list = (title: string, record: Record<string, number>) => {
     const entries = ranked(record, 5);
     const top = entries[0]?.usd ?? 0;
-    const meterWidth = Math.min(16, Math.max(6, listWidth - 34));
 
     return (
       <Box flexDirection="column" width={listWidth}>
@@ -331,12 +375,13 @@ function breakdown({ ui, ledger, now, columns }: SidebarView) {
 
           return (
             <Box flexDirection="row" columnGap={1}>
-              <Box width={20} flexShrink={1}>
+              <Box width={NAME_WIDTH} flexShrink={0}>
                 <Text wrap="truncate-middle">{entry.name}</Text>
               </Box>
-              <Text color={ACCENT}>{meter.filled}</Text>
-              <Text>{meter.empty.replaceAll("░", " ")}</Text>
-              <Text dimColor>{money(entry.usd).padStart(8)}</Text>
+              <Box width={meterWidth} flexShrink={0}>
+                <Text color={ACCENT}>{meter.filled}</Text>
+              </Box>
+              {figure(ui, AMOUNT_WIDTH, money(entry.usd), { isDim: true })}
             </Box>
           );
         })}
@@ -361,16 +406,23 @@ function activityGrid({ ui, ledger, now, columns, backfillStatus }: SidebarView)
   const top = Math.max(...grid.weeks.flat().map((tokens) => tokens ?? 0), 0);
 
   const cell = (tokens: number | null) => {
+    // Each day is a box two columns wide, so a day with a dot and a day with a block take the same room.
+    const inBox = (text: string, color?: string) => (
+      <Box width={2} flexShrink={0}>
+        <Text color={color}>{text}</Text>
+      </Box>
+    );
+
     if (tokens === null) {
-      return <Text>{"  "}</Text>;
+      return inBox("");
     }
 
     if (tokens === 0 || top === 0) {
-      return <Text color={MUTED}>{"· "}</Text>;
+      return inBox("· ", MUTED);
     }
 
     const level = Math.min(SHADES.length - 1, Math.ceil((tokens / top) * SHADES.length) - 1);
-    return <Text color={ACCENT}>{SHADES[level]}</Text>;
+    return inBox(SHADES[level] ?? "", ACCENT);
   };
 
   const rows = WEEKDAYS.map((weekday, dayIndex) => (
@@ -386,24 +438,30 @@ function activityGrid({ ui, ledger, now, columns, backfillStatus }: SidebarView)
     ? `${new Date(`${grid.busiest.key}T12:00:00`).toLocaleDateString("en-US", { day: "2-digit", month: "short" })} · ${short(grid.busiest.tokens)}`
     : "—";
 
+  const stat = (label: string, value: RenderChildren) => (
+    <Box flexDirection="row">
+      <Box width={13} flexShrink={0}>
+        <Text dimColor>{label}</Text>
+      </Box>
+      {value}
+    </Box>
+  );
+
   const stats = (
-    <Box flexDirection="column" marginLeft={columns >= 60 ? 3 : 0}>
+    <Box flexDirection="column" marginLeft={columns >= 60 ? 3 : 0} marginTop={columns >= 60 ? 0 : 1}>
       <Text bold>{`${short(grid.totalTokens)} tokens`}</Text>
       <Text dimColor>{`${grid.weeks.length} weeks`}</Text>
-      <Text> </Text>
-      <Text>
-        <Text dimColor>Active days </Text>
-        {String(grid.activeDays)}
-      </Text>
-      <Text>
-        <Text dimColor>Busiest day </Text>
-        {busiest}
-      </Text>
-      <Text>
-        <Text dimColor>Streak </Text>
-        <Text color={ACCENT}>{`${grid.streak} ${grid.streak === 1 ? "day" : "days"}`}</Text>
-        {today(ledger, now).tokens > 0 ? "" : " (cook today to keep it)"}
-      </Text>
+      <Box flexDirection="column" marginTop={1}>
+        {stat("Active days", <Text>{String(grid.activeDays)}</Text>)}
+        {stat("Busiest day", <Text>{busiest}</Text>)}
+        {stat(
+          "Streak",
+          <Text color={ACCENT}>
+            {`${grid.streak} ${grid.streak === 1 ? "day" : "days"}`}
+            <Text dimColor>{today(ledger, now).tokens > 0 ? "" : " · cook today to keep it"}</Text>
+          </Text>,
+        )}
+      </Box>
     </Box>
   );
 
@@ -426,12 +484,16 @@ function activityGrid({ ui, ledger, now, columns, backfillStatus }: SidebarView)
   );
 }
 
-/** Each legend entry's width, so entries line up in columns as they wrap. */
-const LEGEND_ENTRY_WIDTH = 36;
+/** Cells of the Context table's token and share columns. */
+const TOKENS_WIDTH = 8;
+const SHARE_WIDTH = 6;
 
 /**
- * The Context station: the window as one bar of categories, a legend that
- * names each color with its tokens and share, and the Compact and Clear buttons.
+ * The Context station, laid out as one table. A headline says how full the
+ * window is, a thin bar shows what fills it, and a row per category names
+ * each color with its tokens and its share of the window. Tool schemas that
+ * load on demand sit outside the window, so they are listed apart with a
+ * dash for a share. Compact and Clear close the section.
  */
 function contextWindow({ ui, context, columns, isWorking, contextAction, onContextAction }: SidebarView) {
   const { Box, Text } = ui;
@@ -445,40 +507,51 @@ function contextWindow({ ui, context, columns, isWorking, contextAction, onConte
   }
 
   const segments = contextSegments(context.categories);
-  // A one-cell gap separates segments, so a boundary shows without relying on color.
-  const gaps = Math.max(0, segments.length - 1);
   const cells = allocateCells(
     segments.map((segment) => segment.tokens),
-    Math.max(10, columns - 2 - gaps),
+    Math.max(10, columns),
   );
   const share = (tokens: number) => {
     const percent = (tokens / context.maxTokens) * 100;
     return percent > 0 && percent < 1 ? "<1%" : `${Math.round(percent)}%`;
   };
+  const deferred = context.categories.filter((category) => category.kind === "deferred" && category.tokens > 0);
+
+  const line = (swatch: RenderChildren, name: string, tokens: number, percent: string, isDim = false) => (
+    <Box flexDirection="row" columnGap={1}>
+      <Box width={2} flexShrink={0}>
+        {swatch}
+      </Box>
+      <Box flexGrow={1} flexShrink={1}>
+        <Text dimColor={isDim} wrap="truncate-end">
+          {name}
+        </Text>
+      </Box>
+      {figure(ui, TOKENS_WIDTH, short(tokens), { isDim: true })}
+      {figure(ui, SHARE_WIDTH, percent, { isDim })}
+    </Box>
+  );
 
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Box flexDirection="row" columnGap={1}>
-        <Text bold>Context window</Text>
-        <Text dimColor>{`${short(context.totalTokens)} of ${short(context.maxTokens)} tokens (${share(context.totalTokens)})`}</Text>
+      <Box flexDirection="row" justifyContent="space-between">
+        <Text bold>{`${share(context.totalTokens)} used`}</Text>
+        <Text dimColor>{`${short(context.totalTokens)} / ${short(context.maxTokens)}`}</Text>
       </Box>
       <Box flexDirection="row">
         {segments.map((segment, index) => (
-          <Text color={segment.color}>{(index > 0 ? " " : "") + segment.glyph.repeat(cells[index] ?? 0)}</Text>
+          <Text color={segment.color}>{segment.glyph.repeat(cells[index] ?? 0)}</Text>
         ))}
       </Box>
-      {/* Identity is never color alone: every color in the bar is named here, in the text color. */}
-      <Box flexDirection="row" flexWrap="wrap" marginTop={1}>
-        {segments.map((segment) => (
-          <Box flexDirection="row" width={LEGEND_ENTRY_WIDTH} columnGap={1}>
-            <Text color={segment.color}>{segment.glyph.repeat(2)}</Text>
-            <Box width={20} flexShrink={1}>
-              <Text wrap="truncate-end">{segment.name}</Text>
-            </Box>
-            <Text dimColor>{`${short(segment.tokens)} · ${share(segment.tokens)}`}</Text>
-          </Box>
-        ))}
+      {/* Identity is never color alone: every color in the bar is named in the table, in the text color. */}
+      <Box flexDirection="column" marginTop={1}>
+        {segments.map((segment) => line(<Text color={segment.color}>{segment.glyph.repeat(2)}</Text>, segment.name, segment.tokens, share(segment.tokens)))}
       </Box>
+      {deferred.length > 0 ? (
+        <Box flexDirection="column" marginTop={1}>
+          {deferred.map((category) => line(<Text color={MUTED}>{"▒▒"}</Text>, `${category.name} (deferred)`, category.tokens, "—", true))}
+        </Box>
+      ) : null}
       {contextActions(ui, isWorking, contextAction, onContextAction)}
     </Box>
   );

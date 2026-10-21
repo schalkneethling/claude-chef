@@ -58,6 +58,30 @@ async function barColors(ui: { drawn: () => Promise<unknown> }): Promise<string[
   return rows.reduce<string[]>((most, row) => (row.length > most.length ? row : most), []);
 }
 
+/** Every node of the drawn tree, depth first. */
+async function nodes(ui: { drawn: () => Promise<unknown> }): Promise<any[]> {
+  const all: any[] = [];
+  const walk = (node: any) => {
+    if (!node || typeof node !== "object") {
+      return;
+    }
+
+    all.push(node);
+    (node.children ?? []).forEach(walk);
+  };
+
+  walk(await ui.drawn());
+  return all;
+}
+
+const textOf = (node: any): string => (node.children ?? []).map((child: any) => (typeof child === "object" ? textOf(child) : String(child))).join("");
+
+/** The Box that holds the Text with this exact content, so a test can read the width it was given. */
+async function boxAround(ui: { drawn: () => Promise<unknown> }, text: string): Promise<any> {
+  const all = await nodes(ui);
+  return all.find((node) => node.type === "Box" && (node.children ?? []).some((child: any) => child?.type === "Text" && textOf(child) === text));
+}
+
 /** What the Node helper prints when it finds nothing. */
 const EMPTY_SCAN = { days: {}, unpricedModels: [], files: 0, skippedFiles: 0, responses: 0 };
 
@@ -233,6 +257,52 @@ describe("chef-station", () => {
 
       await ui.unmount();
     }
+  });
+
+  test("Usage keeps each figure on a line that truncates, so nothing wraps over its neighbor", async ($, on) => {
+    const { figures } = kitchen(on);
+    await $.session.start({ surface: "desktop", isInteractive: true, cwd: "/work" } as any);
+    figures.usd = 0.14;
+    await $.turn.complete(opusTurn as any);
+
+    const ui = await $.ui.mount({ ...PANE, surface: "desktop" } as any);
+    const detail = (await nodes(ui)).find((node) => node.type === "Text" && textOf(node) === "100.9k tokens · 98% from cache");
+    const session = (await nodes(ui)).find((node) => node.type === "Text" && /^Opus 5\.5 · 912 written/.test(textOf(node)));
+
+    // Today's detail has a line of its own under the figure, and so does the session's detail under its name.
+    expect(detail?.props.wrap).toBe("truncate-end");
+    expect(session?.props.wrap).toBe("truncate-end");
+    // Percentages sit in a box of one width, so the meters' figures line up.
+    expect((await boxAround(ui, " 85%")).props.width).toBeGreaterThan(0);
+    await ui.unmount();
+  });
+
+  test("Trend, Breakdown and Activity put their columns in boxes of fixed width", async ($, on) => {
+    const { figures } = kitchen(on);
+    await $.session.start({ surface: "desktop", isInteractive: true, cwd: "/work" } as any);
+    figures.usd = 1.5;
+    await $.turn.complete(opusTurn as any);
+    figures.usd = 2;
+    await $.turn.complete({ ...opusTurn, agentId: "sub", usage: { ...opusTurn.usage, model: "claude-haiku-4-5-20251001" } } as any);
+
+    const ui = await $.ui.mount({ ...PANE, surface: "desktop" } as any);
+    await ui.press({ key: "section-trend" });
+    await ui.press({ key: "section-breakdown" });
+    await ui.press({ key: "section-activity" });
+
+    // Trend: the axis labels sit above their hours, in boxes as wide as the hours before them.
+    const axis = await boxAround(ui, "12");
+    expect(axis.props.width).toBeGreaterThan(0);
+
+    // Breakdown: every row's name, meter and amount share one width, so the meters start in one column and the amounts end in one.
+    const amounts = (await nodes(ui)).filter((node) => node.type === "Box" && node.props.justifyContent === "flex-end" && /^\$\d+\.\d\d$/.test(textOf(node).trim()));
+    expect(amounts.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(amounts.map((node) => node.props.width)).size).toBe(1);
+
+    // Activity: each day is a cell of two columns, whatever it is drawn with.
+    const cells = (await nodes(ui)).filter((node) => node.type === "Box" && node.props.width === 2 && /^(· |░░|▒▒|▓▓|██|\s*)$/.test(textOf(node)));
+    expect(cells.length).toBeGreaterThanOrEqual(7);
+    await ui.unmount();
   });
 
   test("each turn adds only its own share of the session cost", async ($, on) => {
@@ -521,11 +591,11 @@ describe("chef-station", () => {
     await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
     const ui = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
 
-    expect(await ui.find({ type: "Text", text: /^ · Opus 5\.5 · / })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /^Opus 5\.5 · / })).toBeDefined();
 
     figures.model = "claude-sonnet-5-5";
     await $.turn.start({ text: "cook", turnId: "t2" } as any);
-    expect(await ui.find({ type: "Text", text: /^ · Sonnet 5\.5 · / })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /^Sonnet 5\.5 · / })).toBeDefined();
     await ui.unmount();
   });
 
@@ -590,14 +660,26 @@ describe("chef-station", () => {
     for (const surface of ["terminal", "desktop"] as const) {
       const ui = await $.ui.mount({ ...PANE, surface } as any);
 
-      expect(await ui.find({ type: "Text", text: "24k of 200k tokens (12%)" })).toBeDefined();
+      // The headline says how full the window is; the thin bar and the table below say with what.
+      expect(await ui.find({ type: "Text", text: "12% used" })).toBeDefined();
+      expect(await ui.find({ type: "Text", text: "24k / 200k" })).toBeDefined();
       expect(await ui.find({ type: "Text", text: "System prompt" })).toBeDefined();
       expect(await ui.find({ type: "Text", text: "Messages" })).toBeDefined();
       expect(await ui.find({ type: "Text", text: "Autocompact buffer" })).toBeDefined();
-      // Schemas loaded on demand sit outside the window.
-      expect(await ui.find({ type: "Text", text: "MCP tools" })).toBeUndefined();
+      expect(await ui.find({ type: "Text", text: "Free space" })).toBeDefined();
+      // Schemas loaded on demand sit outside the window, so the table sets them apart and gives them no share.
+      expect(await ui.find({ type: "Text", text: "MCP tools (deferred)" })).toBeDefined();
+      expect(await ui.find({ type: "Text", text: "40k" })).toBeDefined();
       // The bar hands out colors in its own order, then draws free space and the buffer as textures.
       expect(await barColors(ui)).toEqual(["#3987e5", "#d95926", "#199e70", "subtle", "subtle"]);
+
+      // Numbers sit in boxes of one width each, so the columns line up whatever the font.
+      const tokens = await boxAround(ui, "12k");
+      const share = await boxAround(ui, "6%");
+      expect(tokens.props.width).toBeGreaterThan(0);
+      expect(tokens.props.justifyContent).toBe("flex-end");
+      expect(share.props.width).toBeGreaterThan(0);
+      expect(share.props.justifyContent).toBe("flex-end");
       await ui.unmount();
     }
 
@@ -605,7 +687,7 @@ describe("chef-station", () => {
     await $.turn.complete(opusTurn as any);
 
     const ui = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
-    expect(await ui.find({ type: "Text", text: "60k of 200k tokens (30%)" })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: "30% used" })).toBeDefined();
     await ui.unmount();
   });
 
@@ -705,11 +787,11 @@ describe("chef-station", () => {
     await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
     await $.command.run({ command: "chef", args: "context" } as any);
     const ui = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
-    expect(await ui.find({ type: "Text", text: "24k of 200k tokens (12%)" })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: "12% used" })).toBeDefined();
 
     await $.session.end({ reason: "clear", sessionId: "this-session", resume: {} } as any);
 
-    expect(await ui.find({ type: "Text", text: "24k of 200k tokens (12%)" })).toBeUndefined();
+    expect(await ui.find({ type: "Text", text: "12% used" })).toBeUndefined();
     expect(await ui.find({ type: "Text", text: "Measuring the context window…" })).toBeDefined();
     await ui.unmount();
   });
