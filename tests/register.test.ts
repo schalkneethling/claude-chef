@@ -313,15 +313,13 @@ describe("chef-station", () => {
     await ui.unmount();
   });
 
-  test("the sidebar opens as the session starts, and a bare /chef reopens it", async ($, on) => {
+  test("the sidebar stays closed as the session starts, and /chef opens it", async ($, on) => {
     const { figures } = kitchen(on);
     await $.session.start({ surface: "desktop", isInteractive: true, cwd: "/work" } as any);
-    expect(figures.panes["chef-station"]).toEqual({ title: "Chef Station", isPlaced: true });
+    expect(figures.panes["chef-station"]).toBeUndefined();
 
-    // The person closes the sidebar; a bare /chef brings it back.
-    delete figures.panes["chef-station"];
     expect(await $.command.run({ command: "chef", args: "" } as any)).toMatchObject({ text: "Chef Station is open." });
-    expect(figures.panes["chef-station"]).toBeDefined();
+    expect(figures.panes["chef-station"]).toEqual({ title: "Chef Station", isPlaced: true });
   });
 
   test("a section's header opens and closes it, and the open sections carry over to the next session", async ($, on) => {
@@ -376,13 +374,6 @@ describe("chef-station", () => {
 
     expect((await ui.findAll({ type: "Button", text: /^▾ / })).map((found) => found.text)).toEqual(["▾ Trend"]);
     await ui.unmount();
-  });
-
-  test("on a terminal too narrow for an unasked pane, a toast says how to open the sidebar", async ($, on) => {
-    const { figures } = kitchen(on);
-    figures.isNarrow = true;
-    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
-    expect(figures.toasts).toEqual(["Chef Station waits for a wider terminal. Type /chef to open it now."]);
   });
 
   test("before the session has started, the sidebar says it is getting ready", async ($, on) => {
@@ -791,20 +782,28 @@ describe("chef-station", () => {
       expect(await ui.find({ type: "Text", text: "1 waiting · 2 active of 3" })).toBeDefined();
       await ui.unmount();
 
-      await clock.advance(55_000);
+      // The sidebar is not open yet, so nothing is in sight to refresh.
+      await clock.advance(120_000);
       expect(figures.psCalls).toBe(1);
+
+      // Shown with a figure more than a minute old, the closed section's header is refreshed at once.
+      await $.command.run({ command: "chef", args: "" } as any);
       await clock.advance(5_000);
       expect(figures.psCalls).toBe(2);
+      await clock.advance(55_000);
+      expect(figures.psCalls).toBe(2);
+      await clock.advance(5_000);
+      expect(figures.psCalls).toBe(3);
 
       await $.command.run({ command: "chef", args: "agents" } as any);
-      expect(figures.psCalls).toBe(3);
-      await clock.advance(5_000);
       expect(figures.psCalls).toBe(4);
+      await clock.advance(5_000);
+      expect(figures.psCalls).toBe(5);
 
       // The person closes the sidebar: the list stops refreshing until it shows again.
       delete figures.panes["chef-station"];
       await clock.advance(120_000);
-      expect(figures.psCalls).toBe(4);
+      expect(figures.psCalls).toBe(5);
     });
 
     test("with no sessions folder, the list is empty rather than an error", async ($, on) => {

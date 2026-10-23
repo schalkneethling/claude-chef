@@ -79,7 +79,6 @@ const backfillStatus = atom({ plugin: "chef-station", key: "backfillStatus" } as
   message?: string;
 });
 const agents = atom({ plugin: "chef-station", key: "agents" } as const, { agents: [], refreshedAt: 0 } as ChefStationAgents);
-const isSidebarClosed = atom({ plugin: "chef-station", key: "isSidebarClosed" } as const, false);
 
 /**
  * What one loaded copy of the module keeps between refreshes of the Agents
@@ -139,19 +138,7 @@ export const register: Register = (on, options) => {
       refreshAgentsWhileShown($, agentsRefresher).catch(() => undefined);
     });
 
-    // The stations are always at hand, as the tray above the prompt kept them, unless the
-    // person closed the sidebar earlier in this session (this start can be a reload's).
-    // A session with nowhere to draw (a headless run) refuses the pane, which changes nothing.
-    if (!(await read($, isSidebarClosed))) {
-      const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE }).catch(() => undefined);
-
-      // A terminal places a pane nobody asked for only from 144 columns, so say how to open it.
-      if (opened && !opened.isPlaced) {
-        $.ui.toast("Chef Station waits for a wider terminal. Type /chef to open it now.");
-      }
-    }
-
-    // After the command and the pane, so a slow `ps` never holds the session's start. Even a
+    // After the command, so a slow `ps` never holds the session's start. Even a
     // closed Agents section shows how many sessions are active in its header.
     refreshAgents($, agentsRefresher).catch(() => undefined);
 
@@ -298,18 +285,6 @@ export const register: Register = (on, options) => {
     return result;
   });
 
-  // The person closing the sidebar keeps it closed through reloads, until /chef. Remembering
-  // that must never keep a pane open, so the close goes ahead even if this hook fails.
-  on("ui.close", async ($, e, next) => {
-    const result = await next(e);
-
-    if (e.id === PANE_ID && e.origin.kind === "person") {
-      await update($, isSidebarClosed, () => true);
-    }
-
-    return result;
-  }).catch(($, e, next) => next(e));
-
   on("command.run", { command: "chef" }, async ($, e) => {
     const asked = e.args.trim().toLowerCase();
 
@@ -323,7 +298,6 @@ export const register: Register = (on, options) => {
       };
     }
 
-    await update($, isSidebarClosed, () => false);
     // Opened from the person's command, so the pane is placed at any width. Another plugin
     // may refuse it; the section still opens, for when the sidebar next shows.
     await $.ui.open({ id: PANE_ID, title: PANE_TITLE }).catch(() => undefined);

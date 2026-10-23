@@ -1,6 +1,6 @@
 # Chef Station
 
-A Claude Code mod that opens a Chef Station sidebar beside your conversation, so you can keep an eye on the kitchen without leaving the session. The sidebar opens as each session starts. In the desktop app it docks beside the conversation. A terminal places a pane it was not asked for only when it is at least 144 columns wide, so in a narrower terminal Chef Station says so in a toast and waits for `/chef`; once asked, the sidebar docks beside the transcript in a fullscreen terminal at least 110 columns wide, and sits above the prompt otherwise. The repository is called `claude-chef`, but the plugin is named `chef-station` because Claude Code reserves plugin names that begin with `claude-`.
+A Claude Code mod that opens a Chef Station sidebar beside your conversation, so you can keep an eye on the kitchen without leaving the session. The sidebar does not open on its own: type `/chef` to open it. In the desktop app it docks beside the conversation. In a terminal the sidebar docks beside the transcript in a fullscreen terminal at least 110 columns wide, and sits above the prompt otherwise. The repository is called `claude-chef`, but the plugin is named `chef-station` because Claude Code reserves plugin names that begin with `claude-`.
 
 ## See it in action
 
@@ -27,7 +27,7 @@ The station and button keys work only while the sidebar has focus, so they never
 | :- | :- | :- |
 | `ctrl+x tab` | Anywhere | Focuses the sidebar. |
 | `Esc` | Sidebar focused | Returns to the prompt. |
-| `ctrl+x x` | Anywhere | Closes the sidebar, as its close mark does. It stays closed for the rest of the session until `/chef` opens it again. |
+| `ctrl+x x` | Anywhere | Closes the sidebar, as its close mark does. `/chef` opens it again. |
 | `1` to `6` | Sidebar focused | Opens or closes Usage, Trend, Breakdown, Activity, Context or Agents. |
 | `c` | Context station | Compacts the conversation. |
 | `x` | Context station | Asks to clear the conversation. |
