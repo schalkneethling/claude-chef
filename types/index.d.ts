@@ -182,8 +182,6 @@ declare module "claude-code" {
       backfillStatus: { isRunning: boolean; message?: string };
       /** Every live Claude Code session on this machine, refreshed while the Agents station shows. */
       agents: ChefStationAgents;
-      /** Whether the person closed the sidebar, so a reload does not open it again until they type /chef. */
-      isSidebarClosed: boolean;
     };
   }
 }
