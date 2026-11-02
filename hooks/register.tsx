@@ -26,7 +26,7 @@ import { cacheTtlFromTranscript } from "./cache";
 import { describeBackfill, MAX_READ_BYTES, SCAN_TIMEOUT_MS, type Tallied, toBackfill } from "./backfill";
 import { modelName, short } from "./format";
 import { backfillSince, composeLedger, dayKey, emptyLedger, isStale, recordTurn } from "./ledger";
-import { sidebar, STATIONS } from "./stations";
+import { hasContextWidget, sidebar, STATIONS, stationsFor } from "./stations";
 import { addTranscript, createTally } from "./transcript.mjs";
 
 /**
@@ -298,6 +298,12 @@ export const register: Register = (on, options) => {
       };
     }
 
+    if (asked === "context" && !(await isContextStationDrawn($))) {
+      return {
+        text: "The Context station is left out of the desktop app, which shows the context window in its own widget.",
+      };
+    }
+
     // Opened from the person's command, so the pane is placed at any width. Another plugin
     // may refuse it; the section still opens, for when the sidebar next shows.
     await $.ui.open({ id: PANE_ID, title: PANE_TITLE }).catch(() => undefined);
@@ -324,6 +330,7 @@ export const register: Register = (on, options) => {
 
     return sidebar({
       ui,
+      stations: stationsFor(e.surface),
       openSections: await read($, openSections),
       ledger: currentLedger,
       live: currentLive,
@@ -512,6 +519,15 @@ async function restoreOpenSections($: EngineInterface): Promise<ChefStationName[
   await $.store.set(OPEN_SECTIONS_KEY, restored);
   await $.store.delete(LEGACY_STATION_KEY);
   return restored;
+}
+
+/**
+ * Whether any surface the session draws on shows the Context station. With
+ * none attached yet (a session that has just started), it counts as shown.
+ */
+async function isContextStationDrawn($: EngineInterface): Promise<boolean> {
+  const surfaces = await $.session.surfaces();
+  return surfaces.length === 0 || surfaces.some((surface) => !hasContextWidget(surface));
 }
 
 /** Opens a station's section, or closes it when it is open. */
