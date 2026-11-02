@@ -87,6 +87,8 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
     /** Whether the terminal is too narrow to place a pane nobody asked for. */
     isNarrow: false,
     toasts: [] as string[],
+    /** Where the session draws, as `$.session.surfaces()` answers. */
+    surfaces: ["terminal"] as string[],
     rateLimits: [
       { kind: "five_hour", percentUsed: 12, resetsAt: new Date(START + 2 * HOUR + 10 * 60_000).toISOString() },
       { kind: "seven_day", percentUsed: 85, resetsAt: new Date(START + 47 * HOUR + 5 * 60_000).toISOString() },
@@ -111,6 +113,7 @@ function kitchen(on: On, store: Record<string, unknown> = {}) {
   on("session.root", () => ({ value: "/work/create-project-calavera" }));
   on("session.id", () => ({ value: "this-session" }));
   on("session.model", () => ({ value: figures.model }));
+  on("session.surfaces", () => ({ value: figures.surfaces as any }));
   on("turn.start", ($, e) => ({ turnId: e.turnId }));
   on("process.run", ($, e) => {
     if (e.argv[0] === "ps") {
@@ -578,8 +581,8 @@ describe("chef-station", () => {
     await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
     expect(await $.command.run({ command: "chef", args: "context" } as any)).toMatchObject({ text: "Chef Station: context is open." });
 
-    for (const surface of ["terminal", "desktop"] as const) {
-      const ui = await $.ui.mount({ ...PANE, surface } as any);
+    {
+      const ui = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
 
       expect(await ui.find({ type: "Text", text: "24k of 200k tokens (12%)" })).toBeDefined();
       expect(await ui.find({ type: "Text", text: "System prompt" })).toBeDefined();
@@ -830,6 +833,38 @@ describe("chef-station", () => {
       expect(await ui.find({ type: "Text", text: /^Could not refresh: / })).toBeDefined();
       await ui.unmount();
     });
+  });
+  test("the desktop app, which has a context widget of its own, leaves the Context station out and numbers the rest in order", async ($, on) => {
+    kitchen(on, { openSections: ["usage", "context"] });
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+
+    const desktop = await $.ui.mount({ ...PANE, surface: "desktop" } as any);
+    expect(await desktop.find({ type: "Button", text: /Context/ })).toBeUndefined();
+    expect(await desktop.find({ type: "Text", text: "System prompt" })).toBeUndefined();
+    expect((await desktop.find({ key: "section-activity" }))?.props.hotkey).toBe("4");
+    expect((await desktop.find({ key: "section-agents" }))?.props.hotkey).toBe("5");
+    await desktop.unmount();
+
+    // A terminal drawing the same session keeps all six, Context at 5.
+    const terminal = await $.ui.mount({ ...PANE, surface: "terminal" } as any);
+    expect(await terminal.find({ type: "Button", text: "▾ Context" })).toBeDefined();
+    expect((await terminal.find({ key: "section-context" }))?.props.hotkey).toBe("5");
+    expect((await terminal.find({ key: "section-agents" }))?.props.hotkey).toBe("6");
+    await terminal.unmount();
+  });
+
+  test("/chef context in the desktop app points to its own context widget", async ($, on) => {
+    const { figures } = kitchen(on);
+    figures.surfaces = ["desktop"];
+    await $.session.start({ surface: "desktop", isInteractive: true, cwd: "/work" } as any);
+
+    expect(await $.command.run({ command: "chef", args: "context" } as any)).toMatchObject({
+      text: expect.stringContaining("desktop app"),
+    });
+
+    // With a terminal drawing the session too, the station opens there.
+    figures.surfaces = ["terminal", "desktop"];
+    expect(await $.command.run({ command: "chef", args: "context" } as any)).toMatchObject({ text: "Chef Station: context is open." });
   });
 });
 

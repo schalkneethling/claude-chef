@@ -1,4 +1,4 @@
-import type { Elements, RenderChildren } from "claude-code";
+import type { Elements, RenderChildren, RenderSurface } from "claude-code";
 
 import type {
   ChefStationAgent,
@@ -21,6 +21,8 @@ export type Ui = Pick<Elements["terminal"], "Box" | "Text" | "Button">;
 
 export type SidebarView = {
   ui: Ui;
+  /** The stations this surface shows, numbered for their keys (see `stationsFor`). */
+  stations: readonly Station[];
   /** The stations whose sections are open, each drawing its body under its header. */
   openSections: readonly ChefStationName[];
   ledger: ChefStationLedger;
@@ -46,14 +48,39 @@ export type SidebarView = {
   onToggleIdle: () => void;
 };
 
-export const STATIONS: { name: ChefStationName; label: string; hotkey: string }[] = [
-  { name: "usage", label: "Usage", hotkey: "1" },
-  { name: "trend", label: "Trend", hotkey: "2" },
-  { name: "breakdown", label: "Breakdown", hotkey: "3" },
-  { name: "activity", label: "Activity", hotkey: "4" },
-  { name: "context", label: "Context", hotkey: "5" },
-  { name: "agents", label: "Agents", hotkey: "6" },
+export type Station = { name: ChefStationName; label: string; hotkey: string };
+
+/** Every station, in the sidebar's order. */
+export const STATIONS: readonly Omit<Station, "hotkey">[] = [
+  { name: "usage", label: "Usage" },
+  { name: "trend", label: "Trend" },
+  { name: "breakdown", label: "Breakdown" },
+  { name: "activity", label: "Activity" },
+  { name: "context", label: "Context" },
+  { name: "agents", label: "Agents" },
 ];
+
+/**
+ * The surfaces that draw a context window breakdown of their own, beside the
+ * conversation, so the Context station would only repeat it there.
+ */
+const SURFACES_WITH_CONTEXT_WIDGET: readonly RenderSurface[] = ["desktop"];
+
+/** Whether a surface leaves the Context station out, having a context widget of its own. */
+export function hasContextWidget(surface: RenderSurface): boolean {
+  return SURFACES_WITH_CONTEXT_WIDGET.includes(surface);
+}
+
+/**
+ * The stations a surface shows, each numbered by its place, so the number
+ * keys always run from 1 without a gap.
+ */
+export function stationsFor(surface: RenderSurface): Station[] {
+  return STATIONS.filter((entry) => entry.name !== "context" || !hasContextWidget(surface)).map((entry, index) => ({
+    ...entry,
+    hotkey: String(index + 1),
+  }));
+}
 
 const RATE_LIMIT_LABELS: Record<string, string> = {
   five_hour: "Session",
@@ -82,7 +109,7 @@ export function sidebar(view: SidebarView) {
         </Text>
         {view.plan ? <Text color={ACCENT}>{view.plan}</Text> : null}
       </Box>
-      {STATIONS.map((entry) => section(view, entry))}
+      {view.stations.map((entry) => section(view, entry))}
     </Box>
   );
 }
@@ -92,7 +119,7 @@ export function sidebar(view: SidebarView) {
  * that toggles it, with a one-line summary beside it so a closed section
  * still says something, and the station's body below while it is open.
  */
-function section(view: SidebarView, entry: (typeof STATIONS)[number]) {
+function section(view: SidebarView, entry: Station) {
   const { Box, Text, Button } = view.ui;
   const isOpen = view.openSections.includes(entry.name);
   const summary = summaryOf(entry.name, view);
